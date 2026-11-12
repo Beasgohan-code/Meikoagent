@@ -227,6 +227,10 @@ class PlayerMixin:
         actor_id: int = 0,
     ) -> dict[str, Any]:
         """Drive the bot's own queue from the dashboard (same state, same controls)."""
+        if action == "play":
+            # ``_remote_play`` takes the room lock itself; taking it here too
+            # would deadlock (asyncio locks are not reentrant)
+            return await self._remote_play(chat_id, str(value or ""), actor_id)
         async with self.lock(chat_id):
             queue = await self.load_queue(chat_id)
             if action in {"pause", "resume", "skip", "previous", "stop", "seek", "volume", "shuffle", "loop"}:
@@ -253,8 +257,6 @@ class PlayerMixin:
                 queue.shuffle()
             elif action == "loop":
                 queue.set_loop(int(value or 0))
-            elif action == "play":
-                return await self._remote_play(chat_id, str(value or ""), actor_id)
             await self.save_queue(chat_id, queue)
         await self.publish_room(chat_id, queue)
         return {"state": queue.to_dict(), "action": action}

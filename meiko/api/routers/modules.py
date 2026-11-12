@@ -48,6 +48,12 @@ async def _require_bot(session: Any, auth: Any, bot_id: int) -> None:
         raise error(404, "not_found", "bot not found")
 
 
+def _plugin_slug(plugin: Any) -> str:
+    """A started plugin instance carries its manifest, not a ``slug`` attribute."""
+    manifest = getattr(plugin, "manifest", None)
+    return str(getattr(manifest, "slug", "") or getattr(plugin, "slug", "") or "")
+
+
 def _sessions() -> MusicSessions:
     return MusicSessions(get_module_store())
 
@@ -282,7 +288,7 @@ async def encoder_cancel(
     applied = False
     for plugin in getattr(application, "plugins", None) or []:
         canceller = getattr(plugin, "cancel_remote_job", None)
-        if canceller is not None and getattr(plugin, "slug", "") == "encoder":
+        if canceller is not None and _plugin_slug(plugin) == "encoder":
             applied = bool(await canceller(job_id=job_id, scope=scope))
             break
     ledger.finish(
@@ -491,7 +497,7 @@ async def leech_jobs(auth: CurrentAuth, session: SessionDep, bot_id: int, limit:
     application = get_worker_manager().state.applications.get(bot_id)
     live: list[dict[str, Any]] = []
     for plugin in getattr(application, "plugins", None) or []:
-        if getattr(plugin, "slug", "") == "leech" and hasattr(plugin, "live_tasks"):
+        if _plugin_slug(plugin) == "leech" and hasattr(plugin, "live_tasks"):
             live = plugin.live_tasks()
             break
     return {
@@ -642,7 +648,7 @@ async def _reload_plugin(bot_id: int, slug: str) -> dict[str, Any]:
     if application is None:
         return {"applied": False, "reason": "bot is not running; it will load this on next start"}
     for plugin in getattr(application, "plugins", None) or []:
-        if getattr(plugin, "slug", "") != slug:
+        if _plugin_slug(plugin) != slug:
             continue
         reloader = getattr(plugin, "reload_settings", None)
         if reloader is None:
@@ -923,7 +929,7 @@ async def leech_retry(job_id: str, auth: CurrentAuth, session: SessionDep, bot_i
     if application is None:
         return {"retried": False, "reason": "the bot is not running; start it to retry transfers"}
     for plugin in getattr(application, "plugins", None) or []:
-        if getattr(plugin, "slug", "") != "leech":
+        if _plugin_slug(plugin) != "leech":
             continue
         retry = getattr(plugin, "retry_task", None)
         if retry is None:

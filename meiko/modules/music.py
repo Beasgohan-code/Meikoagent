@@ -228,6 +228,12 @@ class MusicSessions:
         }
 
 
+def _plugin_slug(plugin: Any) -> str:
+    """The manifest slug of a started plugin (instances do not carry one)."""
+    manifest = getattr(plugin, "manifest", None)
+    return str(getattr(manifest, "slug", "") or getattr(plugin, "slug", "") or "")
+
+
 class MusicTransport:
     """Applies webapp actions to the *real* running bot, or says it cannot."""
 
@@ -247,7 +253,7 @@ class MusicTransport:
         if application is None:
             return None
         for plugin in getattr(application, "plugins", None) or []:
-            if getattr(plugin, "slug", "") == "music":
+            if _plugin_slug(plugin) == "music":
                 return plugin
         return None
 
