@@ -1,7 +1,19 @@
 # MEIKO AGENT — Feature Suggestions
 
 > **Status note (2026-11-12):** item **14** (durable plugin state) has been implemented
-> as part of the plugin-package work and is kept below for context.
+> as part of the plugin-package work and is kept below for context. While building the
+> packages, four defects surfaced that the list did not anticipate and that are worth
+> reading as a warning rather than a backlog item:
+>
+> * **command hand-off** — aiogram filters receive the *event*, not the text, unless the
+>   magic filter is on the left; a predicate written either way silently mis-fires,
+> * **catch-all handlers** — `F.text` on a plugin router swallows other plugins' commands,
+>   with no error anywhere (fixed by `support/filters.py`),
+> * **unbound sent objects** — `send_message(...).edit_text(...)` raises `RuntimeError` in
+>   aiogram 3.x; progress messages never updated (fixed by `MeikoPlugin.edit_text`),
+> * **falsy registry** — an empty `CommandRegistry` is falsy (it defines `__len__`), so
+>   `commands or default` silently replaced it. Audit the codebase for the same pattern on
+>   any object that defines `__len__`.
 
 *Curated, costed and ranked. Every item below is something this codebase does not
 do today; each one names the file it would live in, the risk it carries, and how
