@@ -4,16 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  Boxes,
-  Download,
-  Play,
-  Power,
-  RotateCw,
-  Search,
-  Trash2,
-} from "lucide-react";
+import { AlertTriangle, Boxes, Download, Play, Power, RotateCw, Search, Trash2 } from "lucide-react";
 import { api, formatDate } from "@/lib/api";
 import type { Bot, Page, Plugin, PluginInstallation } from "@/lib/types";
 import {

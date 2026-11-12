@@ -74,17 +74,6 @@ export default function BotDetailPage() {
     void queryClient.invalidateQueries({ queryKey: ["bots"] });
   };
 
-  const act = (action: "start" | "restart" | "stop") =>
-    useMutation({
-      mutationFn: () => api.post<BotHealth>(`/bots/${botId}/${action}`),
-      onSuccess: (result) => {
-        setError(result.running === false && action !== "stop" ? result.last_error ?? "Bot did not start" : null);
-        synchronize();
-      },
-      onError: (err: Error) => setError(err.message),
-    });
-
-  // Hooks must not be created lazily inside handlers, so declare them eagerly.
   const start = useMutation({
     mutationFn: () => api.post<BotHealth>(`/bots/${botId}/start`),
     onSuccess: (result) => {
@@ -106,7 +95,6 @@ export default function BotDetailPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
-  void act;
 
   if (bot.isError) {
     return (
