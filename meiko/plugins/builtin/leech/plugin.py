@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, FSInputFile, Message
@@ -279,6 +280,56 @@ class LeechPlugin(MeikoPlugin):
                 raw=True,
             )
         await message_obj.reply(builder.build())
+
+    # -- dashboard integration ---------------------------------------------
+    def live_tasks(self) -> list[dict[str, Any]]:
+        """The real task list the Transfer Dashboard shows (no synthetic rows)."""
+        if self._manager is None:
+            return []
+        return [self._task_dict(task) for task in self._manager.tasks.values()]
+
+    @staticmethod
+    def _task_dict(task: LeechTask) -> dict[str, Any]:
+        return {
+            "id": task.id,
+            "url": task.url,
+            "user_id": task.user_id,
+            "chat_id": task.chat_id,
+            "kind": task.kind,
+            "state": task.state.value if hasattr(task.state, "value") else str(task.state),
+            "downloaded": task.downloaded,
+            "total": task.total,
+            "percent": round(task.percent, 1),
+            "speed": task.speed,
+            "eta": task.eta,
+            "destination": task.destination,
+            "error": task.error,
+            "message_id": task.message_id,
+            "started_at": task.started_at,
+            "finished_at": task.finished_at,
+        }
+
+    async def retry_task(self, task_id: str) -> bool:
+        """Re-run a finished task through the same manager and backend."""
+        manager = self._manager
+        if manager is None:
+            return False
+        task = manager.tasks.get(task_id)
+        if task is None or task.state in (TaskState.QUEUED, TaskState.ACTIVE):
+            return False
+        task.state = TaskState.QUEUED
+        task.downloaded = 0
+        task.error = ""
+        task.started_at = 0.0
+        task.finished_at = 0.0
+        workspace = self._workspace
+        if workspace is None:
+            return False
+        destination = str(workspace.path_for(f"retry_{task.id}"))
+        job = asyncio.ensure_future(manager.run(task, destination))
+        manager._running[task.id] = job  # same bookkeeping the bot uses
+        self._jobs[task.id] = job
+        return True
 
     # -- callbacks ---------------------------------------------------------
     async def on_callback(self, call: CallbackQuery) -> None:

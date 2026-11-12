@@ -121,6 +121,14 @@ class SaverPlugin(MeikoPlugin):
         state = self._state or PluginState(ctx)
         await state.set(INDEX_KEY, self._index.to_list())
 
+    async def reload_settings(self) -> None:
+        """Pick up config the dashboard wrote (Settings / History sections)."""
+        state = self._state
+        if state is None:
+            return
+        self._config = SaverConfig.from_dict(await state.get(STATE_KEY))
+        self._index = SavedIndex(await state.get(INDEX_KEY))
+
     # -- router ----------------------------------------------------------
     async def on_own_command(self, message_obj: Message, **_: object) -> None:
         await self.on_command(message_obj)

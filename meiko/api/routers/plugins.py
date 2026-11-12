@@ -165,6 +165,88 @@ async def toggles(
     return out
 
 
+async def _effective_states(session: Any, auth: Any) -> dict[int, dict[str, dict[str, Any]]]:
+    """Per-bot truth: is this module actually active for that bot?
+
+    A module can be installed globally *and* overridden per bot, and a bot can be
+    stopped.  The dashboards need one answer per (bot, slug), so this resolves the
+    precedence (bot > group > global) instead of leaving the UI to guess.
+    """
+    from meiko.runtime.manager import get_worker_manager
+
+    bots = await BotService(session).list_for_owner(auth.user.id)
+    bot_ids = [bot.id for bot in bots]
+    if not bot_ids:
+        return {}
+    globals_by_plugin = {
+        row.plugin_id: row
+        for row in (
+            await session.scalars(
+                select(PluginInstallation).where(PluginInstallation.bot_id.is_(None))
+            )
+        ).all()
+    }
+    rows = (
+        await session.scalars(
+            select(PluginInstallation).where(PluginInstallation.bot_id.in_(bot_ids))
+        )
+    ).all()
+    catalogue = {plugin.id: plugin.slug for plugin in (await session.scalars(select(Plugin))).all()}
+    manager = get_worker_manager()
+    out: dict[int, dict[str, dict[str, Any]]] = {}
+    for bot in bots:
+        running = bot.id in manager.state.applications
+        per_bot: dict[str, dict[str, Any]] = {}
+        for plugin_id, row in globals_by_plugin.items():
+            slug = catalogue.get(plugin_id)
+            if slug is None:
+                continue
+            per_bot[slug] = {
+                "state": row.state,
+                "enabled": row.state in ACTIVE_STATES,
+                "scope": "global",
+                "installation_id": row.id,
+                "running": running and row.state in ACTIVE_STATES,
+            }
+        for row in rows:
+            if row.bot_id != bot.id:
+                continue
+            slug = catalogue.get(row.plugin_id)
+            if slug is None:
+                continue
+            per_bot[slug] = {
+                "state": row.state,
+                "enabled": row.state in ACTIVE_STATES,
+                "scope": row.scope,
+                "installation_id": row.id,
+                "running": running and row.state in ACTIVE_STATES,
+            }
+        out[bot.id] = per_bot
+    return out
+
+
+@router.get("/effective", response_model=dict)
+async def effective_plugins(auth: CurrentAuth, session: SessionDep) -> dict[str, Any]:
+    """Which modules are enabled for which bot, and whether the bot is running.
+
+    This is what gates every module dashboard: a disabled module must not look
+    active in the UI either.
+    """
+    states = await _effective_states(session, auth)
+    from meiko.runtime.manager import get_worker_manager
+
+    applications = get_worker_manager().state.applications
+    return {
+        "bots": {
+            str(bot_id): {
+                "running": bot_id in applications,
+                "plugins": plugins,
+            }
+            for bot_id, plugins in states.items()
+        }
+    }
+
+
 @router.post("/{slug}/toggle", response_model=dict)
 async def toggle_by_slug(
     slug: str,

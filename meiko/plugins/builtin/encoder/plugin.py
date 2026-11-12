@@ -69,6 +69,39 @@ class EncoderPlugin(MeikoPlugin):
         self._workspace: Workspace | None = None
         self._jobs: dict[int, asyncio.Task[Any]] = {}
         self._cancelled: set[int] = set()
+        self._ledger_ids: dict[int, str] = {}
+        self._ledger: Any = None
+
+    # -- dashboard integration ---------------------------------------------
+    def job_ledger(self) -> Any:
+        """The shared ledger the Encoding Studio reads (one source of truth)."""
+        if self._ledger is None:
+            from meiko.modules.ledger import JobLedger
+            from meiko.modules.store import get_module_store
+
+            self._ledger = JobLedger(get_module_store(), MANIFEST.slug, limit=4)
+        return self._ledger
+
+    def _scope_key(self) -> str:
+        return self.context.scope.key if self.context is not None else "global"
+
+    async def reload_settings(self) -> None:
+        """Re-read state other surfaces wrote (used by the webapp settings forms)."""
+        return None
+
+    async def cancel_remote_job(self, *, job_id: str, scope: str) -> bool:
+        """Called by the API when the dashboard cancels an encode."""
+        if scope != self._scope_key():
+            return False
+        chat_id = next((chat for chat, ident in self._ledger_ids.items() if ident == job_id), None)
+        if chat_id is None:
+            return False
+        task = self._jobs.get(chat_id)
+        if task is None or task.done():
+            return False
+        self._cancelled.add(chat_id)
+        task.cancel()
+        return True
 
     async def on_start(self, ctx: PluginContext) -> None:
         self._workspace = Workspace(
@@ -381,6 +414,23 @@ class EncoderPlugin(MeikoPlugin):
         assert ctx is not None and self._workspace is not None
         chat_id = message_obj.chat.id
         self._cancelled.discard(chat_id)
+        ledger_id = ""
+        try:
+            entry = self.job_ledger().create(
+                scope=self._scope_key(),
+                kind="encode",
+                owner_id=int(getattr(getattr(message_obj.from_user, "id", 0), "real", 0) or 0),
+                meta={
+                    "chat_id": chat_id,
+                    "file": getattr(document, "file_name", "") or "input",
+                    "codec": profile.codec,
+                    "crf": profile.crf,
+                },
+            )
+            ledger_id = entry.id
+            self._ledger_ids[chat_id] = ledger_id
+        except Exception:  # pragma: no cover - the ledger is a record, never a gate
+            ledger_id = ""
         progress = await message_obj.reply(
             message("Starting encode", "video")
             .key_value("Codec", profile.codec, "video")
@@ -403,6 +453,14 @@ class EncoderPlugin(MeikoPlugin):
 
         async def on_progress(stats: dict[str, Any]) -> None:
             last.update(stats)
+            if ledger_id:
+                self.job_ledger().update(
+                    self._scope_key(),
+                    ledger_id,
+                    progress=float(stats.get("percent", 0) or 0),
+                    state="running",
+                    detail=f"speed {stats.get('speed') or '—'} · fps {stats.get('fps') or '—'}",
+                )
             await self.edit_text(
                 progress,
                 message("Encoding…", "loading")
@@ -429,6 +487,8 @@ class EncoderPlugin(MeikoPlugin):
         except asyncio.CancelledError:
             await self.edit_text(progress, message("Cancelled", "cross").build())
             Path(source).unlink(missing_ok=True)
+            if ledger_id:
+                self.job_ledger().finish(self._scope_key(), ledger_id, state="cancelled")
             return
         except FFmpegMissing as exc:
             await self.edit_text(progress, message("FFmpeg missing", "warn").line(esc(str(exc)), raw=True).build())
@@ -438,8 +498,17 @@ class EncoderPlugin(MeikoPlugin):
             return
         finally:
             self._jobs.pop(chat_id, None)
+            self._ledger_ids.pop(chat_id, None)
 
         if not result.ok or not Path(output).exists():
+            if ledger_id:
+                self.job_ledger().finish(
+                    self._scope_key(),
+                    ledger_id,
+                    state="failed",
+                    error=f"ffmpeg exited {result.returncode}",
+                    detail=(result.log_tail or "")[-400:],
+                )
             await self.edit_text(
                 progress,
                 message("Encode failed", "warn")
@@ -458,6 +527,14 @@ class EncoderPlugin(MeikoPlugin):
             .key_value("Codec", profile.codec, "video")
             .build(),
         )
+        if ledger_id:
+            # the studio shows the *validated* output, not the reported 100%
+            self.job_ledger().finish(
+                self._scope_key(),
+                ledger_id,
+                state="done",
+                detail=f"{Path(output).name} · {human_size(size)}",
+            )
         thumb = await ctx.get_state("thumbnail", None) if ctx else None
         try:
             await message_obj.reply_document(

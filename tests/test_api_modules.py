@@ -24,6 +24,11 @@ async def client(settings):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as http:
             yield http
+    # dispose the engine inside the loop that created it: aiosqlite keeps a
+    # worker thread per connection and warns when the loop closes first
+    from meiko.db.base import dispose_engine
+
+    await dispose_engine()
     reset_module_store()
 
 
@@ -283,3 +288,106 @@ class TestModuleAuth:
         for path in ("/api/v1/music/sessions?bot_id=1", "/api/v1/platform/modules", "/api/v1/leech/sources"):
             response = await client.get(path)
             assert response.status_code in (401, 403), path
+
+
+class TestSaverApi:
+    async def test_overview_reads_the_plugin_mirror(self, client):
+        from meiko.config import get_settings
+        from meiko.plugins.support.state import write_mirror
+
+        token, _ = await login(client, 920)
+        bot = await make_bot(client, token)
+        scope = f"bot:{bot['id']}"
+        write_mirror("saver", scope, "saver:config", {"send_mode": "document", "max_batch": 5})
+        write_mirror(
+            "saver",
+            scope,
+            "index:saved",
+            [{"chat": "chan", "message_id": 11, "size": 2048, "kind": "video"}],
+        )
+        response = await client.get(f"/api/v1/saver/overview?bot_id={bot['id']}", headers=headers(token))
+        assert response.status_code == 200
+        body = response.json()
+        assert body["library"]["count"] == 1
+        assert body["config"]["send_mode"] == "document"
+        assert body["policy"]["authorized_sources_only"] is True
+        assert get_settings().data_dir  # the mirror lives under the real data dir
+
+    async def test_settings_patch_is_validated_and_persisted(self, client):
+        from meiko.plugins.support.state import read_mirror
+
+        token, _ = await login(client, 921)
+        bot = await make_bot(client, token)
+        response = await client.patch(
+            f"/api/v1/saver/settings?bot_id={bot['id']}",
+            json={"send_mode": "video", "max_batch": 1, "notify_each": True},
+            headers=headers(token),
+        )
+        assert response.status_code == 200, response.text
+        saved = read_mirror("saver", f"bot:{bot['id']}", "saver:config", {})
+        assert saved["send_mode"] == "video"
+        assert saved["max_batch"] == 1
+        assert saved["notify_each"] is True
+
+    async def test_invalid_enum_falls_back_to_copy(self, client):
+        from meiko.plugins.support.state import read_mirror
+
+        token, _ = await login(client, 922)
+        bot = await make_bot(client, token)
+        await client.patch(
+            f"/api/v1/saver/settings?bot_id={bot['id']}",
+            json={"send_mode": "telepathy"},
+            headers=headers(token),
+        )
+        assert read_mirror("saver", f"bot:{bot['id']}", "saver:config", {})["send_mode"] == "copy"
+
+    async def test_history_and_retention(self, client):
+        from meiko.plugins.support.state import read_mirror, write_mirror
+
+        token, _ = await login(client, 923)
+        bot = await make_bot(client, token)
+        scope = f"bot:{bot['id']}"
+        write_mirror(
+            "saver",
+            scope,
+            "index:saved",
+            [
+                {"chat": "a", "message_id": 1, "size": 10, "saved_at": "2020-01-01T00:00:00+00:00"},
+                {"chat": "a", "message_id": 2, "size": 10},
+            ],
+        )
+        history = await client.get(f"/api/v1/saver/history?bot_id={bot['id']}", headers=headers(token))
+        assert history.json()["total"] == 2
+        pruned = await client.post(
+            f"/api/v1/saver/retention?bot_id={bot['id']}&keep_days=30", headers=headers(token)
+        )
+        assert pruned.json()["removed"] == 1
+        assert len(read_mirror("saver", scope, "index:saved", [])) == 1
+
+    async def test_forget_unknown_record_is_404(self, client):
+        token, _ = await login(client, 924)
+        bot = await make_bot(client, token)
+        response = await client.delete(
+            f"/api/v1/saver/history/404?bot_id={bot['id']}", headers=headers(token)
+        )
+        assert response.status_code == 404
+
+
+class TestEffectivePlugins:
+    async def test_reports_state_per_bot(self, client):
+        token, _ = await login(client, 925)
+        bot = await make_bot(client, token)
+        response = await client.get("/api/v1/plugins/effective", headers=headers(token))
+        assert response.status_code == 200
+        body = response.json()
+        assert str(bot["id"]) in body["bots"]
+        assert body["bots"][str(bot["id"])]["running"] is False
+
+    async def test_other_users_bots_are_not_listed(self, client):
+        owner_token, _ = await login(client, 926)
+        await make_bot(client, owner_token)
+        stranger_token, _ = await login(client, 927)
+        body = (
+            await client.get("/api/v1/plugins/effective", headers=headers(stranger_token))
+        ).json()
+        assert body["bots"] == {}

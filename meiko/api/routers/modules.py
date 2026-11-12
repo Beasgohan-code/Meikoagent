@@ -14,6 +14,7 @@ treated as missing, and every store scope is derived from a bot id you own.
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from typing import Any
@@ -443,16 +444,453 @@ async def leech_jobs(auth: CurrentAuth, session: SessionDep, bot_id: int, limit:
     await _require_bot(session, auth, bot_id)
     ledger = _ledger("leech")
     scope = _scope(bot_id)
-    try:
-        from meiko.plugins.builtin.leech.tasks import TaskManager
-    except Exception:  # pragma: no cover
-        TaskManager = None  # type: ignore[assignment]
+    from meiko.runtime.manager import get_worker_manager
+
+    application = get_worker_manager().state.applications.get(bot_id)
+    live: list[dict[str, Any]] = []
+    for plugin in getattr(application, "plugins", None) or []:
+        if getattr(plugin, "slug", "") == "leech" and hasattr(plugin, "live_tasks"):
+            live = plugin.live_tasks()
+            break
     return {
+        "bot_running": application is not None,
         "jobs": [entry.to_dict() for entry in ledger.entries(scope, limit=limit)],
         "stats": ledger.stats(scope),
+        "live": live,
         "engine": TransferEngine().describe(),
-        "task_manager": TaskManager is not None,
     }
+
+
+# ------------------------------------------------------------------- saver
+SAVER_SLUG = "saver"
+
+
+async def _saver_state(session: Any, auth: Any, bot_id: int) -> dict[str, Any]:
+    """The saver's own durable state, as the bot writes it (no mirror, no guesses)."""
+    from meiko.plugins.support.state import read_mirror
+
+    scope = _scope(bot_id)
+    return {
+        "config": read_mirror(SAVER_SLUG, scope, "saver:config", {}) or {},
+        "index": read_mirror(SAVER_SLUG, scope, "index:saved", []) or [],
+    }
+
+
+@router.get("/saver/overview")
+async def saver_overview(auth: CurrentAuth, session: SessionDep, bot_id: int) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    state = await _saver_state(session, auth, bot_id)
+    entries = state["index"] if isinstance(state["index"], list) else []
+    total = sum(int(entry.get("size") or 0) for entry in entries if isinstance(entry, dict))
+    from meiko.modules.ledger import human_bytes
+
+    return {
+        "config": state["config"],
+        "library": {
+            "count": len(entries),
+            "bytes": total,
+            "human": human_bytes(total),
+        },
+        "jobs": [entry.to_dict() for entry in _ledger(SAVER_SLUG).entries(_scope(bot_id), limit=20)],
+        "policy": {
+            "authorized_sources_only": True,
+            "note": (
+                "Meiko stores and re-delivers content the bot can already access with its own "
+                "permissions. It never bypasses protections and never uses a user session to "
+                "reach restricted chats."
+            ),
+        },
+    }
+
+
+class SaverConfigRequest(BaseModel):
+    caption_template: str | None = None
+    use_caption: bool | None = None
+    send_mode: str | None = None
+    max_batch: int | None = None
+    skip_duplicates: bool | None = None
+    notify_each: bool | None = None
+    delay_seconds: float | None = None
+    delete_words: list[str] | None = None
+    replace_words: list[str] | None = None
+
+
+@router.patch("/saver/settings")
+async def saver_settings(
+    payload: SaverConfigRequest, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    """Write saver settings the bot will pick up on its next reload."""
+    await _require_bot(session, auth, bot_id)
+    from meiko.plugins.builtin.saver.state import SaverConfig
+    from meiko.plugins.support.state import read_mirror, write_mirror
+
+    scope = _scope(bot_id)
+    current = SaverConfig.from_dict(read_mirror(SAVER_SLUG, scope, "saver:config", {}))
+    patch = {key: value for key, value in payload.model_dump().items() if value is not None}
+    updated = SaverConfig.from_dict({**current.to_dict(), **patch})
+    import time as _time
+
+    updated.updated_at = _time.strftime("%Y-%m-%dT%H:%M:%S+00:00", _time.gmtime())
+    write_mirror(SAVER_SLUG, scope, "saver:config", updated.to_dict())
+    await _reload_plugin(bot_id, SAVER_SLUG)
+    return {"saved": True, "config": updated.to_dict()}
+
+
+@router.get("/saver/history")
+async def saver_history(auth: CurrentAuth, session: SessionDep, bot_id: int, limit: int = 50) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    state = await _saver_state(session, auth, bot_id)
+    entries = [entry for entry in state["index"] if isinstance(entry, dict)]
+    return {"saved": entries[:limit], "total": len(entries)}
+
+
+@router.delete("/saver/history/{message_id}")
+async def saver_forget(
+    message_id: int, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    """Remove one record from the saved index (the Telegram post is untouched)."""
+    await _require_bot(session, auth, bot_id)
+    from meiko.plugins.support.state import read_mirror, write_mirror
+
+    scope = _scope(bot_id)
+    entries = read_mirror(SAVER_SLUG, scope, "index:saved", []) or []
+    kept = [entry for entry in entries if int(entry.get("message_id") or 0) != message_id]
+    if len(kept) == len(entries):
+        raise error(404, "not_found", "no saved record for that message")
+    write_mirror(SAVER_SLUG, scope, "index:saved", kept)
+    await _reload_plugin(bot_id, SAVER_SLUG)
+    return {"removed": True, "remaining": len(kept)}
+
+
+@router.post("/saver/retention")
+async def saver_retention(
+    keep_days: int, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    """Drop index records older than N days (retention for the library view)."""
+    await _require_bot(session, auth, bot_id)
+    from datetime import datetime, timedelta, timezone
+
+    from meiko.plugins.support.state import read_mirror, write_mirror
+
+    scope = _scope(bot_id)
+    entries = read_mirror(SAVER_SLUG, scope, "index:saved", []) or []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(0, keep_days))
+    kept = []
+    for entry in entries:
+        raw = str(entry.get("saved_at") or "")
+        try:
+            stamp = datetime.fromisoformat(raw)
+        except ValueError:
+            kept.append(entry)
+            continue
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        if stamp >= cutoff:
+            kept.append(entry)
+    write_mirror(SAVER_SLUG, scope, "index:saved", kept)
+    await _reload_plugin(bot_id, SAVER_SLUG)
+    return {"kept": len(kept), "removed": len(entries) - len(kept), "keep_days": keep_days}
+
+
+async def _reload_plugin(bot_id: int, slug: str) -> dict[str, Any]:
+    """Ask a running bot to re-read its plugin state; report honestly otherwise."""
+    from meiko.runtime.manager import get_worker_manager
+
+    application = get_worker_manager().state.applications.get(bot_id)
+    if application is None:
+        return {"applied": False, "reason": "bot is not running; it will load this on next start"}
+    for plugin in getattr(application, "plugins", None) or []:
+        if getattr(plugin, "slug", "") != slug:
+            continue
+        reloader = getattr(plugin, "reload_settings", None)
+        if reloader is None:
+            return {"applied": False, "reason": "this build cannot reload settings live"}
+        outcome = reloader()
+        if inspect.isawaitable(outcome):
+            await outcome
+        return {"applied": True}
+    return {"applied": False, "reason": f"{slug} is not loaded for this bot"}
+
+
+# ------------------------------------------------- saver import / export
+@router.get("/saver/export")
+async def saver_export(auth: CurrentAuth, session: SessionDep, bot_id: int) -> dict[str, Any]:
+    """Portable export of the saver's own settings and index (no credentials)."""
+    await _require_bot(session, auth, bot_id)
+    state = await _saver_state(session, auth, bot_id)
+    return {
+        "format": "meiko.saver.v1",
+        "exported_at": int(time.time()),
+        "bot_id": bot_id,
+        "config": state["config"],
+        "index": state["index"],
+    }
+
+
+class SaverImportRequest(BaseModel):
+    format: str = "meiko.saver.v1"
+    config: dict[str, Any] = Field(default_factory=dict)
+    index: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/saver/import")
+async def saver_import(
+    payload: SaverImportRequest, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    """Restore an export into this bot (validated, merged, never overwriting)."""
+    await _require_bot(session, auth, bot_id)
+    if payload.format != "meiko.saver.v1":
+        raise error(422, "unsupported_format", "only meiko.saver.v1 exports can be imported")
+    from meiko.plugins.builtin.saver.state import SavedPost, SaverConfig
+    from meiko.plugins.support.state import read_mirror, write_mirror
+
+    scope = _scope(bot_id)
+    current = SaverConfig.from_dict(read_mirror(SAVER_SLUG, scope, "saver:config", {}))
+    merged = SaverConfig.from_dict({**payload.config, **current.to_dict()})  # local values win
+    write_mirror(SAVER_SLUG, scope, "saver:config", merged.to_dict())
+
+    existing = read_mirror(SAVER_SLUG, scope, "index:saved", []) or []
+    seen = {
+        (str(entry.get("chat")), int(entry.get("message_id") or 0))
+        for entry in existing
+        if isinstance(entry, dict)
+    }
+    added = 0
+    for row in payload.index[:2000]:
+        if not isinstance(row, dict):
+            continue
+        post = SavedPost.from_dict(row)
+        key = (post.chat, post.message_id)
+        if key in seen or not post.chat:
+            continue
+        seen.add(key)
+        existing.append(post.to_dict())
+        added += 1
+    write_mirror(SAVER_SLUG, scope, "index:saved", existing[:2000])
+    await _reload_plugin(bot_id, SAVER_SLUG)
+    return {"imported": added, "skipped": len(payload.index) - added, "total": len(existing)}
+
+
+# ------------------------------------------------------- encoder profile
+@router.get("/encoder/profile")
+async def encoder_profile(auth: CurrentAuth, session: SessionDep, bot_id: int) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    from meiko.plugins.support.state import read_mirror
+
+    return {"profile": read_mirror("encoder", _scope(bot_id), "profile", {}) or {}, "tools": _encoder_tools()}
+
+
+class ProfileRequest(BaseModel):
+    codec: str = "x265"
+    crf: int = Field(default=26, ge=0, le=51)
+    preset: str = "medium"
+    container: str = "mkv"
+    resolution: str = "original"
+    audio_codec: str = "copy"
+    audio_bitrate: str = "128k"
+    channels: str = "stereo"
+    subtitles: str = "copy"
+    ten_bit: bool = False
+    watermark: str = ""
+    watermark_position: str = "top-left"
+    thumbnail: bool = True
+
+
+@router.patch("/encoder/profile")
+async def encoder_set_profile(
+    payload: ProfileRequest, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    from meiko.plugins.builtin.encoder.plans import AUDIO_CODECS, CODECS, CONTAINERS, PRESETS, RESOLUTIONS, SUBTITLE_MODES
+    from meiko.plugins.support.state import read_mirror, write_mirror
+
+    problems = []
+    if payload.codec not in CODECS:
+        problems.append(f"codec must be one of {', '.join(CODECS)}")
+    if payload.preset not in PRESETS:
+        problems.append(f"preset must be one of {', '.join(PRESETS)}")
+    if payload.container not in CONTAINERS:
+        problems.append(f"container must be one of {', '.join(CONTAINERS)}")
+    if payload.resolution not in RESOLUTIONS:
+        problems.append(f"resolution must be one of {', '.join(RESOLUTIONS)}")
+    if payload.audio_codec not in AUDIO_CODECS:
+        problems.append(f"audio codec must be one of {', '.join(AUDIO_CODECS)}")
+    if payload.subtitles not in SUBTITLE_MODES:
+        problems.append(f"subtitles must be one of {', '.join(SUBTITLE_MODES)}")
+    if problems:
+        raise error(422, "invalid_profile", "; ".join(problems))
+    scope = _scope(bot_id)
+    previous = read_mirror("encoder", scope, "profile", {}) or {}
+    profile = {**payload.model_dump()}
+    write_mirror("encoder", scope, "profile", profile)
+    await _reload_plugin(bot_id, "encoder")
+    return {"saved": True, "profile": profile, "previous": previous}
+
+
+# --------------------------------------------------------- filestore admin
+class ShopCreateRequest(BaseModel):
+    bot_id: int
+    title: str = ""
+
+
+@router.post("/filestore/shops")
+async def filestore_create_shop(
+    payload: ShopCreateRequest, auth: CurrentAuth, session: SessionDep
+) -> dict[str, Any]:
+    await _require_bot(session, auth, payload.bot_id)
+    try:
+        shop = _filestore().register(
+            _scope(payload.bot_id), owner_id=auth.user.id, bot_id=payload.bot_id, title=payload.title
+        )
+    except ShopError as exc:
+        raise error(409, "conflict", str(exc)) from exc
+    return {"shop": shop.to_dict(include_files=False) | {"usage": shop.usage()}}
+
+
+class ShopSettingsRequest(BaseModel):
+    settings: dict[str, Any] = Field(default_factory=dict)
+    messages: dict[str, str] = Field(default_factory=dict)
+
+
+@router.patch("/filestore/{slug}/settings")
+async def filestore_settings(
+    slug: str, payload: ShopSettingsRequest, auth: CurrentAuth, session: SessionDep
+) -> dict[str, Any]:
+    service = _filestore()
+    for bot_id in await _owned_bot_ids(session, auth):
+        shop = service.for_bot(_scope(bot_id), bot_id)
+        if shop is None or shop.slug != slug:
+            continue
+        try:
+            for key, value in payload.settings.items():
+                shop = service.set_setting(_scope(bot_id), slug, key, value, user_id=auth.user.id)
+            for key, value in payload.messages.items():
+                shop = service.set_message(_scope(bot_id), slug, key, str(value), user_id=auth.user.id)
+        except ShopError as exc:
+            raise error(403, "forbidden", str(exc)) from exc
+        return {"saved": True, "shop": shop.to_dict(include_files=False)}
+    raise error(404, "not_found", "filestore not found")
+
+
+@router.get("/filestore/{slug}/users")
+async def filestore_users(slug: str, auth: CurrentAuth, session: SessionDep) -> dict[str, Any]:
+    service = _filestore()
+    for bot_id in await _owned_bot_ids(session, auth):
+        shop = service.for_bot(_scope(bot_id), bot_id)
+        if shop is None or shop.slug != slug:
+            continue
+        if not shop.can_manage(auth.user.id):
+            raise error(403, "forbidden", "only the owner or an admin can see users")
+        return {
+            "users": [{"user_id": int(uid), **row} for uid, row in shop.users.items()],
+            "admins": shop.admins,
+            "banned": shop.banned,
+        }
+    raise error(404, "not_found", "filestore not found")
+
+
+class ShopAdminRequest(BaseModel):
+    user_id: int
+    action: str = "add_admin"  # add_admin | remove_admin | ban | unban
+
+
+@router.post("/filestore/{slug}/admins")
+async def filestore_admins(
+    slug: str, payload: ShopAdminRequest, auth: CurrentAuth, session: SessionDep
+) -> dict[str, Any]:
+    service = _filestore()
+    for bot_id in await _owned_bot_ids(session, auth):
+        shop = service.for_bot(_scope(bot_id), bot_id)
+        if shop is None or shop.slug != slug:
+            continue
+        scope = _scope(bot_id)
+        try:
+            if payload.action == "add_admin":
+                shop = service.add_admin(scope, slug, payload.user_id, actor_id=auth.user.id)
+            elif payload.action == "remove_admin":
+                shop = service.remove_admin(scope, slug, payload.user_id, actor_id=auth.user.id)
+            elif payload.action in {"ban", "unban"}:
+                shop = service.ban(
+                    scope, slug, payload.user_id, actor_id=auth.user.id, banned=payload.action == "ban"
+                )
+            else:
+                raise error(422, "invalid_action", "action must be add_admin/remove_admin/ban/unban")
+        except ShopError as exc:
+            raise error(403, "forbidden", str(exc)) from exc
+        return {"admins": shop.admins, "banned": shop.banned}
+    raise error(404, "not_found", "filestore not found")
+
+
+# ------------------------------------------------- linkshare batch/settings
+class BatchRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=100)
+    ttl_hours: int = 24
+    max_claims: int = 0
+
+
+@router.post("/linkshare/batch")
+async def linkshare_batch(
+    payload: BatchRequest, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    batch, links = _linkshare().create_batch(
+        _scope(bot_id),
+        urls=payload.urls,
+        owner_id=auth.user.id,
+        ttl_hours=payload.ttl_hours,
+        max_claims=payload.max_claims,
+        bot_id=bot_id,
+    )
+    return {"batch": batch, "links": [link.to_dict() for link in links]}
+
+
+class LinkSettingsRequest(BaseModel):
+    default_ttl_hours: int | None = None
+    default_max_claims: int | None = None
+    shortener_base: str | None = None
+
+
+@router.get("/linkshare/settings")
+async def linkshare_settings(auth: CurrentAuth, session: SessionDep, bot_id: int) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    stored = get_module_store().read("linkshare", f"settings:{_scope(bot_id)}")
+    return {
+        "settings": stored,
+        "defaults": {"default_ttl_hours": 24, "default_max_claims": 0, "shortener_base": ""},
+    }
+
+
+@router.patch("/linkshare/settings")
+async def linkshare_set_settings(
+    payload: LinkSettingsRequest, auth: CurrentAuth, session: SessionDep, bot_id: int
+) -> dict[str, Any]:
+    await _require_bot(session, auth, bot_id)
+    patch = {key: value for key, value in payload.model_dump().items() if value is not None}
+    stored = get_module_store().update("linkshare", f"settings:{_scope(bot_id)}", patch)
+    return {"saved": True, "settings": stored}
+
+
+# --------------------------------------------------------------- leech jobs
+@router.post("/leech/jobs/{job_id}/retry")
+async def leech_retry(job_id: str, auth: CurrentAuth, session: SessionDep, bot_id: int) -> dict[str, Any]:
+    """Re-queue through the running bot; never fake a retry without a worker."""
+    await _require_bot(session, auth, bot_id)
+    from meiko.runtime.manager import get_worker_manager
+
+    application = get_worker_manager().state.applications.get(bot_id)
+    if application is None:
+        return {"retried": False, "reason": "the bot is not running; start it to retry transfers"}
+    for plugin in getattr(application, "plugins", None) or []:
+        if getattr(plugin, "slug", "") != "leech":
+            continue
+        retry = getattr(plugin, "retry_task", None)
+        if retry is None:
+            break
+        outcome = retry(job_id)
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
+        return {"retried": bool(outcome), "job_id": job_id}
+    return {"retried": False, "reason": "the leech plugin is not loaded for this bot"}
 
 
 # ---------------------------------------------------------------- platform
