@@ -65,13 +65,14 @@ def capabilities() -> MTProtoCapabilities:
             available=False,
             reason="install wzgram (or pyrogram) and configure an owner session to enable MTProto features",
         )
-    import shutil
+    from meiko.modules import toolchain
 
     return MTProtoCapabilities(
         available=True,
         client=name,
         reason="",
-        streaming=shutil.which("ffmpeg") is not None,
+        # streaming really needs the binary, not a hopeful boolean
+        streaming=toolchain.has("ffmpeg"),
         large_uploads=True,
     )
 
