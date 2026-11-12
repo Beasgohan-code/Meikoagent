@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .manifest import MANIFEST
+
 import secrets
 
 from aiogram import F, Router
@@ -10,25 +12,8 @@ from aiogram.types import ChatPermissions
 
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
-from meiko.plugins.manifest import PluginManifest
 from meiko.ui import Btn, keyboard, message
 
-MANIFEST = PluginManifest(
-    slug="security",
-    name="Security & Verification",
-    version="1.0.0",
-    description="New-member verification buttons, lockdown mode and join-raid detection.",
-    category="security",
-    icon="lock",
-    permissions=["messages.send", "moderation.write", "messages.delete", "groups.read", "storage.write"],
-    commands=["verify", "lockdown"],
-    events=["join", "callback"],
-    config_schema={
-        "verification_enabled": {"type": "bool", "default": True, "label": "Require verification"},
-        "timeout_minutes": {"type": "int", "default": 10, "label": "Verification timeout"},
-        "raid_join_threshold": {"type": "int", "default": 15, "label": "Joins per minute to trigger lockdown"},
-    },
-)
 
 LOCKED = ChatPermissions(can_send_messages=False)
 OPEN = ChatPermissions(can_send_messages=True, can_send_other_messages=True, can_add_web_page_previews=True)

@@ -11,11 +11,11 @@ import {
   Wrench,
 } from "lucide-react";
 import { api, formatDate } from "@/lib/api";
-import type { User } from "@/lib/types";
+import type { CapabilityState, User } from "@/lib/types";
 import { Badge, Card, EmptyState, ErrorNote, SectionHeader, Skeleton, Stat, Toggle } from "@/components/ui";
 import { SearchInput, Tabs } from "@/components/patterns";
 
-type Tab = "overview" | "users" | "bots" | "audit" | "security";
+type Tab = "overview" | "users" | "bots" | "capabilities" | "audit" | "security";
 
 type OwnerOverview = {
   users: number;
@@ -67,6 +67,23 @@ export default function OwnerPage() {
     enabled: tab === "security",
   });
 
+  const capabilities = useQuery({
+    queryKey: ["owner-capabilities"],
+    queryFn: () => api.get<CapabilityState[]>("/owner/capabilities"),
+    enabled: tab === "capabilities",
+  });
+
+  const setCapability = useMutation({
+    mutationFn: ({ name, enabled }: { name: string; enabled: boolean }) =>
+      api.post(`/owner/capabilities/${name}?enabled=${enabled}`),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["owner-capabilities"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner-audit"] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
   const setRole = useMutation({
     mutationFn: ({ id, role }: { id: number; role: string }) => api.post(`/owner/users/${id}/role?role=${role}`),
     onSuccess: () => {
@@ -116,6 +133,7 @@ export default function OwnerPage() {
           { id: "overview" as Tab, label: "Overview" },
           { id: "users" as Tab, label: "Users" },
           { id: "bots" as Tab, label: "All bots" },
+          { id: "capabilities" as Tab, label: "Capabilities" },
           { id: "audit" as Tab, label: "Audit log" },
           { id: "security" as Tab, label: "Security" },
         ]}
@@ -303,6 +321,63 @@ export default function OwnerPage() {
           </Card>
         ) : (
           <EmptyState title="Audit log empty" description="Every privileged mutation is recorded here." />
+        )
+      ) : null}
+
+      {tab === "capabilities" ? (
+        capabilities.isLoading ? (
+          <Skeleton className="h-48" />
+        ) : (
+          <div className="space-y-3">
+            <Card className="border-amber-500/25 bg-amber-500/[0.04]">
+              <p className="text-sm font-medium text-amber-100">Dangerous features are closed by default</p>
+              <p className="mt-1 text-xs text-amber-100/70">
+                A capability gate is enforced inside the plugin runtime, not only here. Opening one records an
+                audit entry and can be narrowed to specific Telegram ids or bots.
+              </p>
+            </Card>
+            {(capabilities.data ?? []).map((capability) => (
+              <Card key={capability.capability} className="space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-white">{capability.label}</p>
+                      <Badge status={capability.risk === "critical" ? "error" : capability.risk === "high" ? "warning" : "info"}>
+                        {capability.risk}
+                      </Badge>
+                      <Badge status={capability.enabled ? "enabled" : "disabled"}>
+                        {capability.enabled ? "open" : "closed"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-500">{capability.description}</p>
+                    <p className="mt-1 font-mono text-[11px] text-slate-600">
+                      plugin {capability.plugin} · limit {capability.max_runs_per_day || "∞"} runs/day · updated{" "}
+                      {capability.updated_at ? formatDate(capability.updated_at) : "never"}
+                    </p>
+                  </div>
+                  <Toggle
+                    checked={capability.enabled}
+                    onChange={(next) => setCapability.mutate({ name: capability.capability, enabled: next })}
+                    label={`toggle ${capability.label}`}
+                  />
+                </div>
+                {capability.allowed_telegram_ids.length || capability.allowed_bot_ids.length ? (
+                  <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
+                    {capability.allowed_telegram_ids.length ? (
+                      <span className="badge border-white/10 bg-white/[0.03]">
+                        telegram: {capability.allowed_telegram_ids.join(", ")}
+                      </span>
+                    ) : null}
+                    {capability.allowed_bot_ids.length ? (
+                      <span className="badge border-white/10 bg-white/[0.03]">
+                        bots: {capability.allowed_bot_ids.join(", ")}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </Card>
+            ))}
+          </div>
         )
       ) : null}
 

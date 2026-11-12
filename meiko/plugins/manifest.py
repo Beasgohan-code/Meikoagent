@@ -25,6 +25,8 @@ PERMISSIONS = {
     "groups.read": "read group metadata and settings",
     "groups.write": "change group settings",
     "messages.send": "send messages as the bot",
+    "messages.read": "read forum topics and post metadata",
+    "chat.history": "copy/forward messages from a source channel",
     "messages.delete": "delete messages",
     "storage.read": "read plugin key/value storage",
     "storage.write": "write plugin key/value storage",
@@ -36,6 +38,8 @@ PERMISSIONS = {
 }
 
 CATEGORIES = {
+    "storage",
+    "media",
     "moderation",
     "security",
     "management",

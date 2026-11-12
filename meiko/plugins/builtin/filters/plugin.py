@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .manifest import MANIFEST
+
 import re
 
 from aiogram import F, Router
@@ -9,24 +11,8 @@ from aiogram.types import InlineKeyboardMarkup, Message
 
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
-from meiko.plugins.manifest import PluginManifest
 from meiko.ui import Btn, keyboard, message
 
-MANIFEST = PluginManifest(
-    slug="filters",
-    name="Filters & Triggers",
-    version="1.0.0",
-    description="Reply to exact/contains/regex triggers with rich responses and buttons.",
-    category="automation",
-    icon="search",
-    permissions=["messages.send", "groups.read", "storage.read", "storage.write"],
-    commands=["filter", "filters", "stopfilter"],
-    events=["message"],
-    config_schema={
-        "max_triggers": {"type": "int", "default": 100, "label": "Maximum triggers per group"},
-        "allow_regex": {"type": "bool", "default": False, "label": "Allow regex triggers"},
-    },
-)
 
 
 @plugin

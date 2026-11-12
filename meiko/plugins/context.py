@@ -126,12 +126,26 @@ class PluginContext:
         await self.cache.delete(f"{self.storage_namespace}:{key}")
 
     # -- scheduler & events ----------------------------------------------
-    def schedule(self, name: str, interval_seconds: int, callback: Callable[[], Awaitable[None]]) -> PluginJob:
+    def schedule(
+        self,
+        name: str,
+        interval_seconds: int,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        run_immediately: bool = False,
+    ) -> PluginJob:
+        """Register a periodic job.
+
+        ``run_immediately`` fires the callback once right after start-up, which is
+        what watchdogs (keep-alive) and queues (post maker) need – otherwise the
+        first useful tick could be minutes away.
+        """
         self.require("scheduler")
         job = PluginJob(
             name=f"{self.manifest.slug}:{self.scope.key}:{name}",
             interval_seconds=max(5, int(interval_seconds)),
             callback=callback,
+            run_immediately=bool(run_immediately),
         )
         self.jobs.append(job)
         return job

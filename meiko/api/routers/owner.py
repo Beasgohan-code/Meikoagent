@@ -215,3 +215,80 @@ async def maintenance(auth: OwnerAuth, enabled: bool = False) -> dict:
 
     set_maintenance(enabled)
     return {"maintenance_mode": enabled}
+
+
+# --------------------------------------------------------------- capabilities
+CAPABILITIES = {
+    "code_exec": {
+        "label": "Code execution",
+        "description": "Run python/node/bash snippets from chat inside the code_runner sandbox.",
+        "risk": "critical",
+        "plugin": "code_runner",
+    },
+    "remote_fetch": {
+        "label": "Outbound HTTP",
+        "description": "Let internet-facing plugins (integrations, music lookup) call external services.",
+        "risk": "high",
+        "plugin": "integrations",
+    },
+    "file_upload": {
+        "label": "File storage",
+        "description": "Persist uploaded files inside the plugin workspace quota.",
+        "risk": "medium",
+        "plugin": "file_store",
+    },
+}
+
+
+@router.get("/capabilities", response_model=list[dict])
+async def capabilities(auth: OwnerAuth, session: SessionDep) -> list[dict[str, Any]]:
+    """Owner-visible state of every gated capability."""
+    from meiko.plugins.support import CapabilityGate
+
+    out = []
+    for name, meta in CAPABILITIES.items():
+        state = await CapabilityGate(name).state(refresh=True)
+        out.append({**meta, "capability": name, **state.to_dict()})
+    return out
+
+
+@router.post("/capabilities/{capability}", response_model=dict)
+async def set_capability(
+    capability: str,
+    auth: OwnerAuth,
+    session: SessionDep,
+    enabled: bool | None = None,
+    allowed_telegram_ids: str | None = None,
+    allowed_bot_ids: str | None = None,
+    max_runs_per_day: int | None = None,
+) -> dict[str, Any]:
+    """Open, close or narrow a dangerous capability. Owner only, fully audited."""
+    from meiko.plugins.support import CapabilityGate
+
+    if capability not in CAPABILITIES:
+        raise error(404, "not_found", "unknown capability")
+
+    def parse_ids(raw: str | None) -> list[int] | None:
+        if raw is None:
+            return None
+        return [int(part) for part in raw.replace(" ", "").split(",") if part.strip().lstrip("-").isdigit()]
+
+    state = await CapabilityGate(capability).set_state(
+        enabled=enabled,
+        allowed_telegram_ids=parse_ids(allowed_telegram_ids),
+        allowed_bot_ids=parse_ids(allowed_bot_ids),
+        max_runs_per_day=max_runs_per_day,
+        actor_user_id=auth.user.id,
+    )
+    await AuditService(session).log(
+        "owner.capability_changed",
+        actor_user_id=auth.user.id,
+        target_type="capability",
+        target_id=capability,
+        metadata={
+            "enabled": state.enabled,
+            "allowed_telegram_ids": state.allowed_telegram_ids,
+            "allowed_bot_ids": state.allowed_bot_ids,
+        },
+    )
+    return {"capability": capability, **CAPABILITIES[capability], **state.to_dict()}

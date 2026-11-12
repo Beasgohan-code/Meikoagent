@@ -208,6 +208,13 @@ class PluginManager:
 
     async def _job_loop(self, rp: RunningPlugin, job: PluginJob) -> None:
         try:
+            if job.run_immediately:
+                try:
+                    await job.callback()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # pragma: no cover - plugin bug isolation
+                    log.exception("plugin job %s failed on first run", job.name)
             while True:
                 await asyncio.sleep(job.interval_seconds)
                 try:
@@ -314,6 +321,9 @@ class PluginManager:
                 except PluginLifecycleError as exc:
                     result[slug] = f"error: {exc}"
                     log.warning("could not start plugin %s: %s", slug, exc)
+                except PluginError as exc:  # permission/start-up failure is not fatal
+                    result[slug] = f"error: {exc}"
+                    log.warning("plugin %s failed to start: %s", slug, exc)
             else:
                 result[slug] = install.state if install else "not_installed"
         for key, rp in list(self._running.items()):

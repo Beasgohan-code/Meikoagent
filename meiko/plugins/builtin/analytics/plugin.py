@@ -9,25 +9,9 @@ from aiogram.types import Message
 
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
-from meiko.plugins.manifest import PluginManifest
 from meiko.ui import Btn, RichBuilder, keyboard, message
 
-MANIFEST = PluginManifest(
-    slug="analytics",
-    name="Analytics & Digests",
-    version="1.0.0",
-    description="Message counters, daily digests and top-member leaderboards per group.",
-    category="analytics",
-    icon="stats",
-    permissions=["messages.send", "groups.read", "storage.read", "storage.write", "scheduler"],
-    commands=["analytics", "top", "digest"],
-    events=["message"],
-    config_schema={
-        "track_members": {"type": "bool", "default": True, "label": "Track member activity"},
-        "digest_hour": {"type": "int", "default": 20, "label": "Daily digest hour (0-23)"},
-        "top_size": {"type": "int", "default": 10, "label": "Leaderboard size"},
-    },
-)
+from .manifest import MANIFEST
 
 
 @plugin

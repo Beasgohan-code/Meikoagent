@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Suspense, useMemo, useState } from "react";
 import { AlertTriangle, Boxes, Download, Play, Power, RotateCw, Search, Trash2 } from "lucide-react";
 import { api, formatDate } from "@/lib/api";
-import type { Bot, Page, Plugin, PluginInstallation } from "@/lib/types";
+import type { Bot, Page, Plugin, PluginInstallation, PluginToggle } from "@/lib/types";
 import {
   Badge,
   Card,
@@ -16,11 +16,12 @@ import {
   SectionHeader,
   Skeleton,
   Stat,
+  Toggle,
 } from "@/components/ui";
 import { SearchInput, Tabs } from "@/components/patterns";
 import { emoji } from "@/lib/premium-emoji";
 
-type Tab = "marketplace" | "installed" | "logs";
+type Tab = "marketplace" | "switches" | "installed" | "logs";
 
 type PluginDetail = Plugin & { implemented: boolean; installable: boolean; note: string | null; manifest: Record<string, unknown> };
 type PluginLog = { id: number; level: string; message: string; created_at: string; installation_id: number };
@@ -128,6 +129,7 @@ function PluginsContent() {
       <Tabs
         tabs={[
           { id: "marketplace" as Tab, label: "Marketplace" },
+          { id: "switches" as Tab, label: "On / Off" },
           { id: "installed" as Tab, label: "Installed", count: installations.length },
           { id: "logs" as Tab, label: "Logs" },
         ]}
@@ -204,6 +206,8 @@ function PluginsContent() {
           )}
         </div>
       ) : null}
+
+      {tab === "switches" ? <PluginSwitches botId={botId} onError={setError} /> : null}
 
       {tab === "installed" ? (
         installed.isLoading ? (
@@ -302,6 +306,96 @@ function PluginsContent() {
           </p>
         ) : null}
       </Modal>
+    </div>
+  );
+}
+
+function PluginSwitches({ botId, onError }: { botId: string; onError: (message: string | null) => void }) {
+  const queryClient = useQueryClient();
+  const [pending, setPending] = useState<string | null>(null);
+
+  const toggles = useQuery({
+    queryKey: ["plugin-toggles", botId],
+    queryFn: () => api.get<PluginToggle[]>(`/plugins/toggles${botId ? `?bot_id=${botId}` : ""}`),
+  });
+
+  const flip = useMutation({
+    mutationFn: ({ slug, enabled }: { slug: string; enabled: boolean }) =>
+      api.post(`/plugins/${slug}/toggle?enabled=${enabled}${botId ? `&bot_id=${botId}` : ""}`),
+    onMutate: ({ slug }) => setPending(slug),
+    onSuccess: () => {
+      onError(null);
+      void queryClient.invalidateQueries({ queryKey: ["plugin-toggles"] });
+      void queryClient.invalidateQueries({ queryKey: ["plugins-installed"] });
+    },
+    onError: (err: Error) => onError(err.message),
+    onSettled: () => setPending(null),
+  });
+
+  const rows = toggles.data ?? [];
+  const on = rows.filter((row) => row.enabled).length;
+  const grouped = rows.reduce<Record<string, PluginToggle[]>>((acc, row) => {
+    (acc[row.category] = acc[row.category] ?? []).push(row);
+    return acc;
+  }, {});
+
+  if (toggles.isLoading) return <Skeleton className="h-64" />;
+  if (!rows.length) {
+    return <EmptyState title="No toggleable plugins" description="Builtin plugin packages appear here once registered." />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-white">
+            {on} of {rows.length} plugins enabled
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Flipping a switch installs the plugin into {botId ? `bot ${botId}` : "global scope"} if needed, then
+            enables or disables it — no restart required.
+          </p>
+        </div>
+        <Badge status={on ? "running" : "available"}>{botId ? `bot ${botId}` : "global"}</Badge>
+      </Card>
+
+      {Object.entries(grouped).map(([category, plugins]) => (
+        <Card key={category} className="space-y-1">
+          <p className="text-[11px] uppercase tracking-wider text-slate-500">{category}</p>
+          <div className="divide-y divide-white/[0.04]">
+            {plugins.map((plugin) => (
+              <div key={plugin.slug} className="flex items-center gap-3 py-2.5">
+                <div className="grid h-9 w-9 place-items-center rounded-lg bg-violet-500/15 text-base">
+                  {emoji(plugin.icon)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <Link
+                      href={`/plugins/${plugin.slug}`}
+                      className="truncate text-sm font-medium text-slate-100 hover:text-violet-200"
+                    >
+                      {plugin.name}
+                    </Link>
+                    <Badge status={plugin.enabled ? "enabled" : plugin.state}>{plugin.state}</Badge>
+                    {pending === plugin.slug ? <span className="text-[10px] text-slate-500">saving…</span> : null}
+                  </div>
+                  <p className="line-clamp-1 text-[11px] text-slate-500">{plugin.description}</p>
+                  {plugin.missing_config.length ? (
+                    <p className="text-[11px] text-amber-300/80">
+                      needs config: {plugin.missing_config.join(", ")}
+                    </p>
+                  ) : null}
+                </div>
+                <Toggle
+                  checked={plugin.enabled}
+                  onChange={(next) => flip.mutate({ slug: plugin.slug, enabled: next })}
+                  label={`toggle ${plugin.name}`}
+                />
+              </div>
+            ))}
+          </div>
+        </Card>
+      ))}
     </div>
   );
 }

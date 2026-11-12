@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter
 from sqlalchemy import select
 
 from meiko.api.deps import CurrentAuth, SessionDep, error
@@ -17,11 +17,12 @@ from meiko.api.schemas import (
 from meiko.db.models import Plugin, PluginInstallation, PluginLog
 from meiko.plugins.base import registry as plugin_registry
 from meiko.plugins.context import PluginScope
-from meiko.plugins.manager import PluginManager
 from meiko.runtime.manager import get_worker_manager
 from meiko.services.core import AuditService, BotService, NotFound, PluginService, ValidationError
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
+
+ACTIVE_STATES = ("enabled", "configured", "running")
 
 
 async def _sync_runtime(bot_id: int | None) -> dict[str, Any]:
@@ -33,6 +34,32 @@ async def _sync_runtime(bot_id: int | None) -> dict[str, Any]:
     if application is None:
         return {"applied": False, "reason": "bot is not running; state applies on next start"}
     return {"applied": True, "states": await application.load_plugins()}
+
+
+def _missing_config(plugin: Plugin, record: PluginInstallation | None) -> list[str]:
+    """Required config keys still empty for this installation."""
+    schema = (plugin.config_schema or {}) if plugin else {}
+    values = (record.config or {}) if record else {}
+    missing = []
+    for key, spec in schema.items():
+        if not isinstance(spec, dict) or not spec.get("required"):
+            continue
+        current = values.get(key, spec.get("default"))
+        if current in (None, "", [], {}):
+            missing.append(key)
+    return missing
+
+
+async def _stop_runtime(record: PluginInstallation, slug: str) -> dict[str, Any]:
+    if record.bot_id is None:
+        return {"applied": False, "reason": "global scope is materialised per bot"}
+    manager = get_worker_manager()
+    application = manager.state.applications.get(record.bot_id)
+    if application is None or application.plugins is None:
+        return {"applied": False, "reason": "bot is not running"}
+    scope = PluginScope(bot_id=record.bot_id, group_id=record.group_id)
+    await application.plugins.stop(slug, scope, installation=record)
+    return {"applied": True, "stopped": slug}
 
 
 @router.get("", response_model=list[PluginResponse])
@@ -84,6 +111,121 @@ async def installed(
         )
         out.append(payload)
     return out
+
+
+@router.get("/toggles", response_model=list[dict])
+async def toggles(
+    auth: CurrentAuth, session: SessionDep, bot_id: int | None = None
+) -> list[dict]:
+    """Every implemented plugin with its on/off state for one scope.
+
+    This backs the switch grid in the webapp: one row per builtin plugin, with
+    the installation id (when installed) so the UI can flip it in one click.
+    """
+    if bot_id is not None:
+        try:
+            await BotService(session).get(bot_id, auth.user.id)
+        except NotFound as exc:
+            raise error(404, "not_found", "bot not found") from exc
+        installations = await PluginService(session).installations_for_bot(bot_id)
+    else:
+        bots = await BotService(session).list_for_owner(auth.user.id)
+        bot_ids = [bot.id for bot in bots]
+        installations = (
+            await session.scalars(
+                select(PluginInstallation).where(
+                    PluginInstallation.bot_id.in_(bot_ids) if bot_ids else False
+                )
+            )
+        ).all()
+    by_plugin: dict[int, PluginInstallation] = {row.plugin_id: row for row in installations}
+    catalogue = (await session.scalars(select(Plugin).order_by(Plugin.category, Plugin.name))).all()
+    implemented = set(plugin_registry.slugs())
+    out: list[dict] = []
+    for plugin in catalogue:
+        if plugin.slug not in implemented:
+            continue
+        record = by_plugin.get(plugin.id)
+        state = record.state if record else "available"
+        missing = _missing_config(plugin, record)
+        out.append(
+            {
+                "slug": plugin.slug,
+                "name": plugin.name,
+                "icon": plugin.icon,
+                "category": plugin.category,
+                "description": plugin.description,
+                "state": state,
+                "enabled": state in ACTIVE_STATES,
+                "installation_id": record.id if record else None,
+                "scope": record.scope if record else None,
+                "missing_config": missing,
+            }
+        )
+    return out
+
+
+@router.post("/{slug}/toggle", response_model=dict)
+async def toggle_by_slug(
+    slug: str,
+    auth: CurrentAuth,
+    session: SessionDep,
+    bot_id: int | None = None,
+    enabled: bool = True,
+) -> dict:
+    """Install-if-needed then enable/disable, in a single call.
+
+    The UI switch should not make the user walk three screens: flipping it on an
+    uninstalled plugin installs it (into ``bot_id`` or globally) and enables it.
+    """
+    plugin = await session.scalar(select(Plugin).where(Plugin.slug == slug))
+    if plugin is None:
+        raise error(404, "not_found", "plugin not found")
+    if slug not in set(plugin_registry.slugs()):
+        raise error(422, "not_implemented", "no runtime implementation is registered")
+    if bot_id is not None:
+        try:
+            await BotService(session).get(bot_id, auth.user.id)
+        except NotFound as exc:
+            raise error(404, "not_found", "bot not found") from exc
+    service = PluginService(session)
+    record = await service.installation(slug, bot_id)
+    if record is None:
+        try:
+            record = await service.install(slug, bot_id=bot_id, user_id=auth.user.id)
+        except (NotFound, ValidationError) as exc:
+            raise error(400, "install_failed", str(exc)) from exc
+    runtime: dict[str, Any]
+    if enabled:
+        missing = _missing_config(plugin, record)
+        if missing:
+            raise error(
+                422,
+                "config_required",
+                "configure before enabling: " + ", ".join(missing),
+            )
+        try:
+            await service.enable(record)
+        except ValidationError as exc:
+            raise error(422, "config_required", str(exc)) from exc
+        runtime = await _sync_runtime(record.bot_id)
+    else:
+        await service.disable(record)
+        runtime = await _stop_runtime(record, plugin.slug)
+    await AuditService(session).log(
+        "plugin.toggled",
+        actor_user_id=auth.user.id,
+        target_type="plugin",
+        target_id=slug,
+        metadata={"enabled": enabled, "bot_id": bot_id},
+    )
+    return {
+        "slug": slug,
+        "state": record.state,
+        "enabled": record.state in ACTIVE_STATES,
+        "installation_id": record.id,
+        "runtime": runtime,
+    }
 
 
 @router.get("/{slug}", response_model=dict)

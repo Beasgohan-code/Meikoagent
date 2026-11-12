@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .manifest import MANIFEST
+
 import platform
 import sys
 
@@ -12,23 +14,8 @@ from meiko import __version__
 from meiko.config import BOT_API_VERSION
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
-from meiko.plugins.manifest import PluginManifest
 from meiko.ui import RichBuilder, message
 
-MANIFEST = PluginManifest(
-    slug="developer",
-    name="Developer Tools",
-    version="1.0.0",
-    description="Runtime introspection: version, Bot API coverage, plugin health, ids.",
-    category="developer",
-    icon="code",
-    permissions=["messages.send", "storage.read"],
-    commands=["dev", "runtime", "coverage"],
-    events=["message"],
-    config_schema={
-        "show_tracebacks": {"type": "bool", "default": False, "label": "Expose tracebacks"},
-    },
-)
 
 
 @plugin

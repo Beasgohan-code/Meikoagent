@@ -101,6 +101,33 @@ export type PluginInstallation = {
   plugin?: Plugin | null;
 };
 
+export type PluginToggle = {
+  slug: string;
+  name: string;
+  icon: string;
+  category: string;
+  description: string;
+  state: string;
+  enabled: boolean;
+  installation_id: number | null;
+  scope: string | null;
+  missing_config: string[];
+};
+
+export type CapabilityState = {
+  capability: string;
+  label: string;
+  description: string;
+  risk: string;
+  plugin: string;
+  enabled: boolean;
+  allowed_telegram_ids: number[];
+  allowed_bot_ids: number[];
+  max_runs_per_day: number;
+  updated_by: number | null;
+  updated_at: string;
+};
+
 export type ActivityItem = {
   id: number;
   kind: string;

@@ -81,6 +81,16 @@ PREMIUM_EMOJI: dict[str, tuple[str, str]] = {
     "premium": ("5427168083074628963", "💎"),
     "loading": ("5319136744473552991", "⏳"),
     "sleep": ("5319164443015890251", "💤"),
+    # media / automation pack (Videl feature set)
+    "music": ("5375243960633718526", "🎵"),
+    "video": ("5375232960956774875", "🎬"),
+    "photo": ("5372926953978341366", "🖼️"),
+    "folder": ("5447410659077661506", "📁"),
+    "file": ("5408848727763389775", "📄"),
+    "type": ("5375136778328049525", "🔤"),
+    "palette": ("5319136744473552991", "🎨"),
+    "refresh": ("5368808590600748258", "🔄"),
+    "plus": ("5416117059207572332", "➕"),
 }
 
 #: Semantic aliases so copy decks can stay stable while ids evolve.
@@ -112,6 +122,17 @@ ALIASES: dict[str, str] = {
     "unmuted": "unmute",
     "active": "check",
     "inactive": "cross",
+    "audio": "music",
+    "song": "music",
+    "tag": "type",
+    "rename": "type",
+    "saver": "download",
+    "heartbeat": "bell",
+    "watchdog": "monitor",
+    "keepalive": "heart",
+    "caption": "message",
+    "post": "message",
+    "storage": "folder",
 }
 
 

@@ -242,6 +242,8 @@ class TestPluginManagerLifecycle:
                 started.append(manifest.slug)
             except PluginLifecycleError as exc:  # required config (ai) is expected
                 assert "configured" in str(exc) or "dependencies" in str(exc)
+            except PluginPermissionError as exc:  # optional grants not requested here
+                assert "is not granted" in str(exc)
         assert "anti_spam" in started and "welcome" in started
         await manager.stop_all()
         assert manager.running_summary() == []

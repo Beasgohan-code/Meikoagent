@@ -14,35 +14,9 @@ from aiogram.types import Message
 
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
-from meiko.plugins.manifest import PluginManifest
 from meiko.ui import message
 
-MANIFEST = PluginManifest(
-    slug="ai",
-    name="AI Assistant",
-    version="1.0.0",
-    description="Answers /ask questions through a configured OpenAI-compatible endpoint.",
-    category="ai",
-    icon="orb",
-    permissions=["messages.send", "http.outbound", "storage.read", "storage.write"],
-    commands=["ask", "ai"],
-    events=["message"],
-    config_schema={
-        "api_base": {
-            "type": "string",
-            "default": "https://api.openai.com/v1",
-            "label": "OpenAI-compatible base URL",
-        },
-        "model": {"type": "string", "default": "gpt-4o-mini", "label": "Model"},
-        "api_key": {"type": "secret", "required": True, "label": "API key"},
-        "max_tokens": {"type": "int", "default": 400, "label": "Max tokens"},
-        "system_prompt": {
-            "type": "string",
-            "default": "You are MEIKO, a concise Telegram assistant.",
-            "label": "System prompt",
-        },
-    },
-)
+from .manifest import MANIFEST
 
 
 @plugin
