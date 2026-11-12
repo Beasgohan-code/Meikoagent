@@ -230,9 +230,10 @@ tests; none of them requires a new external service the sandbox cannot run.
 
 ## Status note — `music` (Playeon/Videl player + toolkit)
 
-Playback lives **inside `music/`** (the separate `vc_player` package was folded
-in on request): `plugin.py` keeps the toolkit wiring and `player.py` carries the
-player as a mixin, so one installation, one `/` namespace and one state file.
+Playback lives **inside `music/`**: `plugin.py` keeps the toolkit wiring and
+`player.py` carries the player as a mixin, so one installation, one `/` namespace
+and one state file. (A separate `vc_player` package existed briefly; its content
+was moved here rather than kept as a parallel module.)
 Modelled on `playeon/playeon` and `Beasgohan-code/Videl0`:
 
 | layer | file | what it does |

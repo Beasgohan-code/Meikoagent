@@ -143,6 +143,34 @@ and reports why.
                    └─────────────────────────────────────┘
 ```
 
+### Media modules (`meiko/modules/`)
+
+Six modules sit on one shared infrastructure layer instead of inventing their own:
+
+```
+ music    saver    encoder   filestore   linkshare   leech      ← plugins (per bot)
+   │        │         │          │            │         │
+   └────────┴─────────┴──────────┴────────────┴─────────┘
+                        meiko/modules
+   store · events · jobs · ledger · progress · media · links · telemetry
+                 music.service · filestore · linkshare · leech · mtproto
+   │
+   ├── FastAPI  /api/v1/{music,encoder,saver,filestore,linkshare,leech,platform}
+   └── Next.js  Music Studio · Saver · Encoding Studio · FileStore ·
+                LinkShare · Transfer · Platform sections
+```
+
+- **One queue, one ledger, one progress renderer, one storage policy** — the spec's "do not build
+  six copies" requirement, enforced by `tests/test_modules_contract.py`.
+- **A disabled module is inert:** no handlers registered, no background work, and the dashboards
+  refuse to show controls (`GET /api/v1/plugins/effective` resolves global → group → bot precedence).
+- **Real-time player sync:** WebSocket (`/api/v1/music/live`) with an SSE fallback
+  (`/api/v1/music/stream`) for proxies that cannot upgrade; both read the same event hub.
+- **Honest degradation:** missing ffmpeg yields a validated plan, not a fake encode; unconfigured
+  transfer adapters report `available() == false`; link analytics say exactly what Telegram can and
+  cannot report.
+- Full audit of the six reference repositories, licences, refusals and gaps: **[docs/MODULES.md](docs/MODULES.md)**.
+
 ### Runtime model
 
 - **One consumer per bot token.** A distributed lock (`bot-start:{id}`) plus a pid file stops two
@@ -212,7 +240,9 @@ Bot API 10.4 widgets are handled by a typed adapter, and `allowed_updates` inclu
 
 ## API
 
-Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 78 documented paths.
+Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 120 documented paths,
+including the media-module surface (`/music`, `/encoder`, `/saver`, `/filestore`, `/linkshare`, `/leech`,
+`/platform`) — see `docs/MODULES.md` §7.
 
 ```bash
 curl -s "$API/api/v1/dashboard" -H "Authorization: Bearer $SESSION"
@@ -235,7 +265,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 198 tests
+python -m pytest -q          # 642 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -315,6 +345,12 @@ Everything is environment driven — see `.env.example`. Key settings:
 - Plugin archives from third parties are validated and sandboxed in spirit, but only built-in plugins
   are shipped here — the marketplace lists what is actually implemented (`implemented: false` is shown
   explicitly in the UI).
+- Voice-chat streaming still needs `pytgcalls` plus a signalling path; without it the player says
+  `simulation` while the queue and controls remain real.
+- `yt_dlp`, aria2, qBittorrent and rclone are not installed; the transfer engine reports those adapters
+  as unavailable instead of failing later.
+- MTProto (WZgram/Pyrogram) is an optional adapter, never the primary framework, and never a way to
+  reach content the bot itself cannot read.
 
 ## License
 
