@@ -34,6 +34,7 @@ from meiko.db.base import get_sessionmaker
 from meiko.db.models import Plugin, PluginInstallation, PluginLog
 from meiko.logging_setup import get_logger
 from meiko.plugins.base import MeikoPlugin, PluginError, PluginRegistry, registry as plugin_registry
+from meiko.plugins.manifest import PluginManifest
 from meiko.plugins.context import PluginContext, PluginJob, PluginScope
 
 log = get_logger("plugins.manager")
@@ -83,7 +84,9 @@ class PluginManager:
         cache: Cache | None = None,
     ) -> None:
         self.plugins = plugins or plugin_registry
-        self.commands = commands or command_registry
+        # NB: never use `commands or ...` – an *empty* CommandRegistry is falsy
+        # (it defines __len__), which would silently swap in the global registry.
+        self.commands = commands if commands is not None else command_registry
         self.cache = cache or get_cache()
         self._running: dict[str, RunningPlugin] = {}
         self._lock = asyncio.Lock()
@@ -182,6 +185,12 @@ class PluginManager:
 
             if dispatcher is not None:
                 dispatcher.include_router(context.routers[0] if context.routers else router)
+
+            # The plugin handlers are attached to the dispatcher above, so the
+            # declared commands must become visible to the command registry too –
+            # otherwise Telegram's menu, the Command Studio and /help would never
+            # mention a plugin command.  Unregistering happens on stop.
+            self._register_commands(manifest)
 
             rp = RunningPlugin(
                 slug=slug,
@@ -336,6 +345,36 @@ class PluginManager:
         return result
 
     # -- helpers ---------------------------------------------------------
+    def _register_commands(self, manifest: PluginManifest) -> None:
+        """Publish a running plugin's declared commands (idempotent, non-fatal)."""
+        from meiko.core.commands import Command, CommandError
+
+        for name in manifest.commands or []:
+            clean = str(name).lstrip("/").split("@")[0].lower()
+            if not clean:
+                continue
+            existing = self.commands.get(clean)
+            if existing is not None:
+                if existing.plugin not in (None, manifest.slug):
+                    log.warning(
+                        "plugin %s command /%s clashes with %s; keeping the original",
+                        manifest.slug,
+                        clean,
+                        existing.plugin or "core",
+                    )
+                continue
+            try:
+                self.commands.register(
+                    Command(
+                        name=clean,
+                        description=f"{manifest.name} plugin command",
+                        plugin=manifest.slug,
+                        category=manifest.category,
+                    )
+                )
+            except CommandError as exc:  # pragma: no cover - defensive
+                log.debug("could not register /%s for %s: %s", clean, manifest.slug, exc)
+
     async def _write_log(
         self, installation: PluginInstallation, level: str, message: str
     ) -> None:

@@ -17,6 +17,7 @@ from .files import (
 )
 from .gates import CapabilityGate, GateDenied
 from .owners import scope_owner
+from .state import PluginState, read_mirror, state_dir, write_mirror
 
 __all__ = [
     "CapabilityGate",
@@ -28,4 +29,8 @@ __all__ = [
     "safe_filename",
     "sanitize_ext",
     "scope_owner",
+    "PluginState",
+    "read_mirror",
+    "state_dir",
+    "write_mirror",
 ]

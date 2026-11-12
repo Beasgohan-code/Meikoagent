@@ -26,6 +26,7 @@ from aiogram import Router
 
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
+from meiko.plugins.support.state import PluginState
 
 
 class PluginError(RuntimeError):
@@ -41,6 +42,7 @@ class MeikoPlugin:
         self.context: PluginContext | None = None
         self.router: Router | None = None
         self.running: bool = False
+        self._state_store: PluginState | None = None
 
     # -- lifecycle hooks -------------------------------------------------
     async def on_install(self, ctx: PluginContext) -> None:
@@ -69,6 +71,20 @@ class MeikoPlugin:
         self.context = ctx
         self.router = Router(name=f"plugin:{self.manifest.slug}")
         return self.router
+
+    @property
+    def state(self) -> PluginState:
+        """Cache-first, disk-backed storage for this plugin + scope.
+
+        Use it for anything that must survive a restart (indices, queues,
+        counters that drive limits).  Short-lived values can stay on the cache
+        through ``ctx.set_state``; this mirror costs one small file write.
+        """
+        if self._state_store is None:
+            if self.context is None:
+                raise PluginError("plugin state is only available while running")
+            self._state_store = PluginState(self.context)
+        return self._state_store
 
     def config(self, key: str, default: Any = None) -> Any:
         if self.context is None:

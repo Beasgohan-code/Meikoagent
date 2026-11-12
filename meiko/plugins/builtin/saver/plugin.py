@@ -11,7 +11,7 @@ from aiogram.types import BufferedInputFile, FSInputFile, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import Workspace, human_size, safe_filename
+from meiko.plugins.support import PluginState, Workspace, human_size, safe_filename
 from meiko.ui import Btn, esc, keyboard, message
 
 from .captions import CaptionContext, render_caption
@@ -66,12 +66,14 @@ class SaverPlugin(MeikoPlugin):
         self._config = SaverConfig()
         self._index = SavedIndex()
         self._workspace: Workspace | None = None
+        self._state: PluginState | None = None
         self._lock: asyncio.Lock | None = None
 
     # -- lifecycle -------------------------------------------------------
     async def on_start(self, ctx: PluginContext) -> None:
-        self._config = SaverConfig.from_dict(await ctx.get_state(STATE_KEY))
-        self._index = SavedIndex(await ctx.get_state(INDEX_KEY))
+        self._state = PluginState(ctx)
+        self._config = SaverConfig.from_dict(await self._state.get(STATE_KEY))
+        self._index = SavedIndex(await self._state.get(INDEX_KEY))
         self._workspace = Workspace(
             MANIFEST.slug,
             scope=ctx.scope.key,
@@ -94,13 +96,15 @@ class SaverPlugin(MeikoPlugin):
         if ctx is None:
             return
         self._config.touch()
-        await ctx.set_state(STATE_KEY, self._config.to_dict())
+        state = self._state or PluginState(ctx)
+        await state.set(STATE_KEY, self._config.to_dict())
 
     async def save_index(self) -> None:
         ctx = self.context
         if ctx is None:
             return
-        await ctx.set_state(INDEX_KEY, self._index.to_list())
+        state = self._state or PluginState(ctx)
+        await state.set(INDEX_KEY, self._index.to_list())
 
     # -- router ----------------------------------------------------------
     async def on_message(self, message_obj: Message, **_: object) -> None:

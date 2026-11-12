@@ -10,7 +10,7 @@ from aiogram.types import BufferedInputFile, FSInputFile, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import Workspace, human_size, safe_filename
+from meiko.plugins.support import PluginState, Workspace, human_size, safe_filename
 from meiko.ui import Btn, esc, keyboard, message
 
 from .id3 import TrackTags, is_audio, read_tags, write_tag
@@ -44,10 +44,12 @@ class MusicPlugin(MeikoPlugin):
         super().__init__()
         self._library = MusicLibrary()
         self._workspace: Workspace | None = None
+        self._state: PluginState | None = None
 
     async def on_start(self, ctx: PluginContext) -> None:
+        self._state = PluginState(ctx)
         self._library = MusicLibrary(
-            await ctx.get_state(INDEX_KEY), limit=int(self.config("index_limit", 3000))
+            await self._state.get(INDEX_KEY), limit=int(self.config("index_limit", 3000))
         )
         self._workspace = Workspace(
             MANIFEST.slug,
@@ -66,7 +68,8 @@ class MusicPlugin(MeikoPlugin):
     async def persist(self) -> None:
         ctx = self.context
         if ctx is not None:
-            await ctx.set_state(INDEX_KEY, self._library.to_list())
+            state = self._state or PluginState(ctx)
+            await state.set(INDEX_KEY, self._library.to_list())
 
     # -- routing ---------------------------------------------------------
     async def on_message(self, message_obj: Message, **_: object) -> None:

@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
+from meiko.plugins.support import PluginState
 from meiko.ui import esc, message
 
 from .manifest import MANIFEST
@@ -45,9 +46,11 @@ class PostMakerPlugin(MeikoPlugin):
         super().__init__()
         self._template = PostTemplate()
         self._queue = PostQueue()
+        self._state: PluginState | None = None
 
     async def on_start(self, ctx: PluginContext) -> None:
-        stored = await ctx.get_state(TEMPLATE_KEY)
+        self._state = PluginState(ctx)
+        stored = await self._state.get(TEMPLATE_KEY)
         if isinstance(stored, dict):
             self._template = PostTemplate.from_dict(stored)
         else:
@@ -56,7 +59,7 @@ class PostMakerPlugin(MeikoPlugin):
                 footer=str(self.config("footer", "")),
             )
         self._queue = PostQueue(
-            await ctx.get_state(QUEUE_KEY), limit=int(self.config("queue_limit", 50))
+            await self._state.get(QUEUE_KEY), limit=int(self.config("queue_limit", 50))
         )
         router = Router(name="plugin:post_maker")
         router.message.register(self.on_message, F.text)
@@ -119,8 +122,9 @@ class PostMakerPlugin(MeikoPlugin):
         ctx = self.context
         if ctx is None:
             return
-        await ctx.set_state(TEMPLATE_KEY, self._template.to_dict())
-        await ctx.set_state(QUEUE_KEY, self._queue.to_list())
+        state = self._state or PluginState(ctx)
+        await state.set(TEMPLATE_KEY, self._template.to_dict())
+        await state.set(QUEUE_KEY, self._queue.to_list())
 
     # -- commands --------------------------------------------------------
     async def cmd_post(self, message_obj: Message, argument: str) -> None:

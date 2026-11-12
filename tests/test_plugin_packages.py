@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from meiko.core.commands import CommandRegistry
+from meiko.db.models import Plugin, PluginInstallation
 from meiko.plugins.base import registry as plugin_registry
+from meiko.plugins.context import PluginScope
+from meiko.plugins.manager import PluginManager
 from meiko.plugins.builtin import BUILTIN_MANIFESTS
 
 @pytest_asyncio.fixture()
@@ -675,3 +679,113 @@ class TestCapabilities:
         with pytest.raises(GateDenied):
             await gate.require(telegram_id=42, bot_id=8, platform_owner=True)
         await gate.require(telegram_id=42, bot_id=7, platform_owner=True)
+
+# ----------------------------------------------------- command publication
+class TestCommandsReachTelegram:
+    """A running package's commands must be visible to the menu and the Studio."""
+
+    async def _start(self, manager, session, bot_id: int, slugs: tuple[str, ...]):
+        from meiko.plugins.base import registry
+
+        manifests = {m.slug: m for m in registry.manifests()}
+        for slug in slugs:
+            manifest = manifests[slug]
+            plugin = Plugin(slug=slug, name=manifest.name, category=manifest.category)
+            session.add(plugin)
+            await session.flush()
+            install = PluginInstallation(
+                plugin_id=plugin.id,
+                bot_id=bot_id,
+                scope="bot",
+                state="enabled",
+                config={k: v.get("default") for k, v in manifest.config_schema.items() if "default" in v},
+            )
+            session.add(install)
+            await session.flush()
+            await manager.start(slug, installation=install, scope=PluginScope(bot_id=bot_id))
+
+    async def test_package_commands_are_published_and_removed(self, db, cache, session) -> None:
+        from meiko.services.core import BotService, UserService
+
+        commands = CommandRegistry()
+        manager = PluginManager(plugins=plugin_registry, commands=commands, cache=cache)
+        user = await UserService(session).get_or_create_telegram_user(4242, username="cmd_owner")
+        bot = await BotService(session).register(user.id, token="123456789:" + "Z" * 34)
+        await self._start(
+            manager, session, bot.id, ("saver", "renamer", "music", "post_maker", "keep_alive")
+        )
+        menu = {entry["command"] for entry in commands.telegram_menu()}
+        for expected in ("save", "autorename", "testrename", "music", "magic", "schedule", "keepalive"):
+            assert expected in menu, expected
+        assert "ping" not in menu, "/ping must stay with the utilities plugin"
+        assert commands.get("save").plugin == "saver"
+
+        await manager.stop_all()
+        assert commands.telegram_menu() == []
+        assert commands.get("autorename") is None
+
+    async def test_empty_registry_is_not_replaced_by_the_global_one(self, cache) -> None:
+        """``CommandRegistry`` defines ``__len__``; an empty one is falsy."""
+        from meiko.plugins.base import registry
+
+        injected = CommandRegistry()
+        manager = PluginManager(plugins=registry, commands=injected, cache=cache)
+        assert manager.commands is injected
+
+
+# ---------------------------------------------------------- durable state
+class TestDurablePluginState:
+    """Plugin bookkeeping must survive a restart (memory cache would lose it)."""
+
+    async def test_mirror_roundtrip_and_corruption(self, settings) -> None:
+        from meiko.plugins.support import read_mirror, write_mirror
+        from meiko.plugins.support.state import drop_mirror, state_path
+
+        payload = {"entries": [{"id": 1, "name": "a mkv"}], "n": 3}
+        path = write_mirror("durable", "bot:9", "index:saved", payload)
+        assert path.is_file()
+        assert read_mirror("durable", "bot:9", "index:saved") == payload
+        assert read_mirror("durable", "bot:9", "nope", "fallback") == "fallback"
+
+        state_path("durable", "bot:9", "index:saved").write_text("{not json")
+        assert read_mirror("durable", "bot:9", "index:saved", "safe") == "safe"
+        assert drop_mirror("durable", "bot:9", "index:saved") is True
+        assert drop_mirror("durable", "bot:9", "index:saved") is False
+
+    async def test_saver_index_survives_a_cache_wipe(self, settings, cache) -> None:
+        from meiko.cache import Cache, MemoryBackend
+        from meiko.plugins.builtin.saver.state import INDEX_KEY
+        from meiko.plugins.context import PluginContext, PluginScope
+        from meiko.plugins.manifest import PluginManifest
+        from meiko.plugins.support import PluginState
+
+        manifest = PluginManifest(slug="saver", name="Saver", permissions=["storage.read", "storage.write"])
+        first = PluginContext(
+            manifest=manifest,
+            scope=PluginScope(bot_id=7),
+            config={},
+            session_factory=None,  # not touched by state helpers
+            cache=cache,
+        )
+        await PluginState(first).set(INDEX_KEY, [{"chat": "-100", "message_id": 5}])
+
+        # new process: fresh cache, same DATA_DIR
+        cold = Cache(MemoryBackend(), "test")
+        second = PluginContext(
+            manifest=manifest,
+            scope=PluginScope(bot_id=7),
+            config={},
+            session_factory=None,
+            cache=cold,
+        )
+        assert await second.get_state(INDEX_KEY) is None  # cache really is empty
+        assert await PluginState(second).get(INDEX_KEY) == [{"chat": "-100", "message_id": 5}]
+
+    def test_plugin_exposes_state_only_when_running(self) -> None:
+        from meiko.plugins.base import MeikoPlugin, PluginError
+
+        class Bare(MeikoPlugin):
+            pass
+
+        with pytest.raises(PluginError):
+            _ = Bare().state

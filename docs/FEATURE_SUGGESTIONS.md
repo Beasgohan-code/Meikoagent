@@ -1,5 +1,8 @@
 # MEIKO AGENT — Feature Suggestions
 
+> **Status note (2026-11-12):** item **14** (durable plugin state) has been implemented
+> as part of the plugin-package work and is kept below for context.
+
 *Curated, costed and ranked. Every item below is something this codebase does not
 do today; each one names the file it would live in, the risk it carries, and how
 you would know it works. Filler ("add dark mode", "add more emojis") is excluded
@@ -105,12 +108,14 @@ Free hosts die silently. Let the plugin POST a heartbeat to a public uptime endp
 (opt-in, `http.outbound`) and additionally expose `GET /health` already present — the
 watchdog then distinguishes "Telegram unreachable" from "this process is frozen".
 
-## 14. Cache-layer plugin state with Redis fallback semantics (P0 · S)
+## 14. ~~Cache-layer plugin state with Redis fallback semantics~~ — **done**
 
-`PluginContext.get_state/set_state` go through `Cache`. With the memory cache, plugin
-state (saved index, heartbeat history, post queue) is lost on restart. Make the cache
-interface expose `persistent` and have `get_state` fall back to `SystemSetting` when the
-backend is not durable — otherwise a restart silently wipes a user's saver index.
+`meiko/plugins/support/state.py` now mirrors every `PluginState` write to
+`DATA_DIR/plugins/<slug>/<scope>/_state/*.json` (atomic rename) and falls back to that
+mirror on a cache miss. `MeikoPlugin.state` exposes it to plugins, and `saver`,
+`post_maker`, `keep_alive` and `music` use it, so a restart no longer wipes the saved
+index, the scheduled queue or the heartbeat history. Covered by
+`TestDurablePluginState` (including a cache-wipe simulation).
 
 ## 15. Command-level audit trail (P1 · S)
 
@@ -201,8 +206,8 @@ the heartbeat plugin a monitoring tool rather than a necessity.
 
 ### Suggested order of work
 
-1. **P0 block** — 1 (signed packs), 2 (secret vault), 14 (durable plugin state),
-   21 (scheduler catch-up), 3 (dry-run).
+1. **P0 block** — 1 (signed packs), 2 (secret vault), 21 (scheduler catch-up),
+   3 (dry-run).  *(#14 durable plugin state shipped.)*
 2. **P1 block** — 6, 12, 26 (user-visible features), then 15, 16, 22 (operability).
 3. **P2 block** — 10, 18, 24, 27, 28.
 

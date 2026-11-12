@@ -331,7 +331,6 @@ async def run_snippet(
                 process.kill()
         except ProcessLookupError:
             pass
-        with_stderr = ""
         try:
             await asyncio.wait_for(process.wait(), timeout=2)
         except Exception:  # pragma: no cover

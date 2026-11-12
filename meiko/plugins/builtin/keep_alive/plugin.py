@@ -11,7 +11,7 @@ from aiogram.types import Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import scope_owner
+from meiko.plugins.support import PluginState, scope_owner
 from meiko.ui import esc, message
 
 from .manifest import MANIFEST
@@ -27,13 +27,15 @@ class KeepAlivePlugin(MeikoPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._tracker = HeartbeatTracker()
+        self._state: PluginState | None = None
         self._enabled = True
         self._owner_id: int | None = None
         self._bot_username: str = ""
 
     async def on_start(self, ctx: PluginContext) -> None:
+        self._state = PluginState(ctx)
         self._tracker = HeartbeatTracker.from_dict(
-            await ctx.get_state(STATE_KEY), history=int(self.config("history", 50))
+            await self._state.get(STATE_KEY), history=int(self.config("history", 50))
         )
         self._owner_id, _ = await scope_owner(ctx)
         router = Router(name="plugin:keep_alive")
@@ -52,13 +54,14 @@ class KeepAlivePlugin(MeikoPlugin):
     async def persist(self) -> None:
         ctx = self.context
         if ctx is not None:
-            await ctx.set_state(STATE_KEY, self._tracker.to_dict())
+            state = self._state or PluginState(ctx)
+            await state.set(STATE_KEY, self._tracker.to_dict())
 
     # -- commands --------------------------------------------------------
     async def on_command(self, message_obj: Message, **_: object) -> None:
         text = (message_obj.text or "").strip()
         command = text.split()[0].split("@")[0].lower()
-        if command == "/ping":
+        if command in ("/ping", "/latency", "/uptime"):
             await self.cmd_ping(message_obj)
         elif command == "/heartbeat":
             await self.cmd_status(message_obj)

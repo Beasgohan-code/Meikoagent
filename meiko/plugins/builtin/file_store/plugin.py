@@ -91,7 +91,9 @@ class FileStorePlugin(MeikoPlugin):
         text = (message_obj.text or "").strip()
         command = text.split()[0].split("@")[0].lower() if text else ""
         handlers = {
-            "/save": self.cmd_save,
+            # The vault owns the /file* namespace: /save belongs to the post
+            # saver (install both and the distinction matters).
+            "/fsave": self.cmd_save,
             "/get": self.cmd_get,
             "/files": self.cmd_files,
             "/storestats": self.cmd_stats,
@@ -116,7 +118,7 @@ class FileStorePlugin(MeikoPlugin):
             await self._reply(
                 message_obj,
                 message("File Store", "database")
-                .line("Reply to a file with <code>/save</code> to store it.", raw=True)
+                .line("Reply to a file with <code>/fsave</code> to store it.", raw=True)
                 .line("Add #tags or a caption to make it searchable.", raw=True)
                 .build(),
             )
@@ -231,7 +233,7 @@ class FileStorePlugin(MeikoPlugin):
         if not files:
             await self._reply(
                 message_obj,
-                message("Vault", "database").line("Nothing stored yet. Reply to a file with /save.").build(),
+                message("Vault", "database").line("Nothing stored yet. Reply to a file with /fsave.").build(),
             )
             return
         page_size = max(3, int(self.config("index_page_size", 10)))

@@ -248,7 +248,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
-| `tests/test_plugin_packages.py` | package layout, saver links/captions, renamer engine, ID3 writer, post templates, heartbeat, sandbox, toggles + capabilities |
+| `tests/test_plugin_packages.py` | package layout, saver links/captions, renamer engine, ID3 writer, post templates, heartbeat, sandbox, toggles + capabilities, command publication, durable state |
 | `tests/test_workflows.py` | **Workflows A–I** end-to-end acceptance |
 | `tests/test_startup.py` | `start.py` argument contract, schema ownership, Compose contract |
 
@@ -331,6 +331,13 @@ or a database.
 | `post_maker/` | HTML post templates with entity validation, URL button rows, scheduled queue (`+10m`) |
 | `keep_alive/` | self-ping, latency stats, failure-streak alerts to the owner, recovery notice |
 | `code_runner/` | sandboxed python/node/bash execution, **owner-gated** by a capability |
+
+Launching a plugin also publishes its declared commands into the command registry, so
+Telegram's menu, `/help` and the Command Studio stay in sync (`/save`, `/autorename`,
+`/music`, `/schedule`, `/keepalive`, …) — and unregistering on stop leaves nothing behind.
+Plugins that keep bookkeeping (saved index, post queue, heartbeat history) use
+`MeikoPlugin.state`, which is cache-first and mirrored to disk, so a restart cannot
+silently lose it.
 
 Switches: `GET /plugins/toggles` + `POST /plugins/{slug}/toggle?enabled=` (the webapp
 **Plugins → On / Off** tab) install-if-needed and flip state in one click. Dangerous

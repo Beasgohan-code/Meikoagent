@@ -223,7 +223,8 @@ class TestPluginManagerLifecycle:
     async def test_all_builtin_plugins_start_and_stop(self, db, cache, session):
         from meiko.plugins.base import registry as builtin_registry
 
-        manager = PluginManager(plugins=builtin_registry, commands=CommandRegistry(), cache=cache)
+        commands = CommandRegistry()
+        manager = PluginManager(plugins=builtin_registry, commands=commands, cache=cache)
         install_probe = await self._install(session, slug="probe")
         scope = PluginScope(bot_id=install_probe.bot_id)
         started = []
@@ -245,8 +246,14 @@ class TestPluginManagerLifecycle:
             except PluginPermissionError as exc:  # optional grants not requested here
                 assert "is not granted" in str(exc)
         assert "anti_spam" in started and "welcome" in started
+        # commands declared by a running plugin must be visible to Telegram/Studio
+        assert commands.get("autorename") is not None, "renamer commands were not published"
+        assert commands.get("keepalive") is not None
+        assert "autorename" in manager.active_commands()
         await manager.stop_all()
         assert manager.running_summary() == []
+        assert commands.get("autorename") is None, "commands leaked after stop"
+        assert manager.active_commands() == []
 
 
 class TestCommandRegistry:

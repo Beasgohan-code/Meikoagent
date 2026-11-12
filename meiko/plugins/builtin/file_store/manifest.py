@@ -9,13 +9,13 @@ MANIFEST = PluginManifest(
     name="File Store",
     version="1.0.0",
     description=(
-        "Keep files in a per-scope vault: upload with /save, fetch with /get, browse with /files, "
+        "Keep files in a per-scope vault: upload with /fsave, fetch with /get, browse with /files, "
         "inspect with /storestats. Quota enforced per scope, contents never exposed to the webapp."
     ),
     category="utilities",
     icon="database",
     permissions=["messages.send", "storage.read", "storage.write"],
-    commands=["save", "get", "files", "del", "storestats", "storequota"],
+    commands=["fsave", "get", "files", "del", "storestats", "storequota"],
     events=["message"],
     resources={"cpu": "low", "disk_mb": 512},
     config_schema={
