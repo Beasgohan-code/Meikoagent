@@ -38,7 +38,7 @@ from .library import (
 )
 from .manifest import MANIFEST
 from .player import PLAYER_COMMAND_NAMES, PlayerMixin
-from .sources import PlaylistManager
+from .sources import PlaylistManager, YtDlpBackend
 
 INDEX_KEY = "index:tracks"
 
@@ -198,12 +198,24 @@ class MusicPlugin(PlayerMixin, MeikoPlugin):
         limit = int(self.config("results", 8))
         results = self._library.search(argument, limit=limit)
         if not results:
-            await message_obj.reply(
-                message("No matches", "search")
-                .line(f"Nothing matched <code>{esc(argument)}</code>.", raw=True)
-                .line("Index tracks with <code>/addmusic</code>.", raw=True)
-                .build()
+            builder = message("No matches", "search").line(
+                f"Nothing matched <code>{esc(argument)}</code> in the local catalogue.", raw=True
             )
+            # the catalogue is only one layer; say what the other layers can do
+            if bool(self.config("use_ytdlp", True)) and YtDlpBackend().available():
+                builder.line("A remote search is available: <code>/play %s</code>." % esc(argument), raw=True)
+            elif str(self.config("resolve_endpoint", "") or "").strip():
+                builder.line(
+                    "The owner's extractor relay is configured: <code>/play %s</code> searches it." % esc(argument),
+                    raw=True,
+                )
+            else:
+                builder.line(
+                    "Index tracks with <code>/addmusic</code>, or set <code>resolve_endpoint</code> / install "
+                    "<code>yt-dlp</code> for remote search.",
+                    raw=True,
+                )
+            await message_obj.reply(builder.build())
             return
         builder = message(f"Results for “{argument}”", "music")
         for entry, score in results:

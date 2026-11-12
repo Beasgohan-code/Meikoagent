@@ -523,105 +523,108 @@ def attach_video(bot, owner_id: int, text: str):
     return Update(update_id=11, message=message)
 
 
+@pytest.fixture()
+async def music_wired(db, cache, session):
+    from aiogram import Bot, Dispatcher
+    from aiogram.client.session.base import BaseSession
+
+    from meiko.core.commands import CommandRegistry
+    from meiko.db.models import Plugin, PluginInstallation
+    from meiko.plugins.context import PluginScope
+    from meiko.plugins.manager import PluginManager
+    from meiko.services.core import BotService, UserService
+
+    import meiko.plugins.builtin
+
+    assert meiko.plugins.builtin.BUILTIN_MANIFESTS  # importing registers every plugin
+    from meiko.plugins.base import registry
+
+    token = "987654321:" + "Q" * 34
+
+    class Recorder(BaseSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.sent: list[tuple[str, dict]] = []
+
+        async def close(self) -> None:
+            pass
+
+        async def make_request(self, bot, method, timeout=None):
+            from datetime import datetime, timezone
+
+            from aiogram.methods import GetMe, SendMessage
+            from aiogram.types import Message
+
+            payload = method.model_dump(exclude_none=True)
+            if isinstance(method, GetMe):
+                return {"id": 1, "is_bot": True, "first_name": "T", "username": "vcbot"}
+            self.sent.append((type(method).__name__, payload))
+            if isinstance(method, SendMessage):
+                # a raw dict would bypass aiogram's validation; the handler
+                # expects a real Message (it stores message_id for editing)
+                chat = payload["chat_id"]
+                return Message.model_validate(
+                    {
+                        "message_id": 500 + len(self.sent),
+                        "date": int(datetime.now(timezone.utc).timestamp()),
+                        "chat": chat if isinstance(chat, dict) else {"id": int(chat), "type": "private"},
+                        "text": payload.get("text", ""),
+                    }
+                ).as_(bot)
+            return True
+
+        async def stream_content(self, *args, **kwargs):
+            yield b""
+
+        def replies(self) -> list[str]:
+            return [p.get("text", "") for name, p in self.sent if name == "SendMessage"]
+
+        def buttons(self) -> list[str]:
+            out = []
+            for _name, payload in self.sent:
+                markup = payload.get("reply_markup") or {}
+                for row in markup.get("inline_keyboard", []):
+                    out.extend(button.get("callback_data", "") for button in row)
+            return [data for data in out if data]
+
+    manager = PluginManager(plugins=registry, commands=CommandRegistry(), cache=cache)
+    user_row = await UserService(session).get_or_create_telegram_user(OWNER_ID, username="vc")
+    bot_row = await BotService(session).register(user_row.id, token=token)
+    recorder = Recorder()
+    bot = Bot(token, session=recorder)
+    dispatcher = Dispatcher()
+    manifest = next(m for m in registry.manifests() if m.slug == "music")
+    plugin_row = Plugin(slug=manifest.slug, name=manifest.name, category=manifest.category)
+    session.add(plugin_row)
+    await session.flush()
+    install = PluginInstallation(
+        plugin_id=plugin_row.id,
+        bot_id=bot_row.id,
+        scope="bot",
+        state="enabled",
+        config={k: v.get("default") for k, v in manifest.config_schema.items() if "default" in v},
+    )
+    session.add(install)
+    await session.flush()
+    running = await manager.start(
+        manifest.slug,
+        installation=install,
+        scope=PluginScope(bot_id=bot_row.id),
+        bot=bot,
+        dispatcher=dispatcher,
+    )
+    ACTIVE_PLUGIN["plugin"] = running.instance
+    try:
+        yield bot, dispatcher, recorder
+    finally:
+        await manager.stop_all()
+        await bot.session.close()
+
+
 class TestDispatch:
     """Real Dispatcher + recording session: the commands must actually answer."""
 
-    @pytest.fixture()
-    async def wired(self, db, cache, session):
-        from aiogram import Bot, Dispatcher
-        from aiogram.client.session.base import BaseSession
-
-        from meiko.core.commands import CommandRegistry
-        from meiko.db.models import Plugin, PluginInstallation
-        from meiko.plugins.context import PluginScope
-        from meiko.plugins.manager import PluginManager
-        from meiko.services.core import BotService, UserService
-
-        import meiko.plugins.builtin
-
-        assert meiko.plugins.builtin.BUILTIN_MANIFESTS  # importing registers every plugin
-        from meiko.plugins.base import registry
-
-        token = "987654321:" + "Q" * 34
-
-        class Recorder(BaseSession):
-            def __init__(self) -> None:
-                super().__init__()
-                self.sent: list[tuple[str, dict]] = []
-
-            async def close(self) -> None:
-                pass
-
-            async def make_request(self, bot, method, timeout=None):
-                from datetime import datetime, timezone
-
-                from aiogram.methods import GetMe, SendMessage
-                from aiogram.types import Message
-
-                payload = method.model_dump(exclude_none=True)
-                if isinstance(method, GetMe):
-                    return {"id": 1, "is_bot": True, "first_name": "T", "username": "vcbot"}
-                self.sent.append((type(method).__name__, payload))
-                if isinstance(method, SendMessage):
-                    # a raw dict would bypass aiogram's validation; the handler
-                    # expects a real Message (it stores message_id for editing)
-                    chat = payload["chat_id"]
-                    return Message.model_validate(
-                        {
-                            "message_id": 500 + len(self.sent),
-                            "date": int(datetime.now(timezone.utc).timestamp()),
-                            "chat": chat if isinstance(chat, dict) else {"id": int(chat), "type": "private"},
-                            "text": payload.get("text", ""),
-                        }
-                    ).as_(bot)
-                return True
-
-            async def stream_content(self, *args, **kwargs):
-                yield b""
-
-            def replies(self) -> list[str]:
-                return [p.get("text", "") for name, p in self.sent if name == "SendMessage"]
-
-            def buttons(self) -> list[str]:
-                out = []
-                for _name, payload in self.sent:
-                    markup = payload.get("reply_markup") or {}
-                    for row in markup.get("inline_keyboard", []):
-                        out.extend(button.get("callback_data", "") for button in row)
-                return [data for data in out if data]
-
-        manager = PluginManager(plugins=registry, commands=CommandRegistry(), cache=cache)
-        user_row = await UserService(session).get_or_create_telegram_user(OWNER_ID, username="vc")
-        bot_row = await BotService(session).register(user_row.id, token=token)
-        recorder = Recorder()
-        bot = Bot(token, session=recorder)
-        dispatcher = Dispatcher()
-        manifest = next(m for m in registry.manifests() if m.slug == "music")
-        plugin_row = Plugin(slug=manifest.slug, name=manifest.name, category=manifest.category)
-        session.add(plugin_row)
-        await session.flush()
-        install = PluginInstallation(
-            plugin_id=plugin_row.id,
-            bot_id=bot_row.id,
-            scope="bot",
-            state="enabled",
-            config={k: v.get("default") for k, v in manifest.config_schema.items() if "default" in v},
-        )
-        session.add(install)
-        await session.flush()
-        running = await manager.start(
-            manifest.slug,
-            installation=install,
-            scope=PluginScope(bot_id=bot_row.id),
-            bot=bot,
-            dispatcher=dispatcher,
-        )
-        ACTIVE_PLUGIN["plugin"] = running.instance
-        try:
-            yield bot, dispatcher, recorder
-        finally:
-            await manager.stop_all()
-            await bot.session.close()
+    wired = music_wired  # the module-level fixture, kept for readability
 
     async def _send(self, wired, text: str) -> list[str]:
         from aiogram.types import Update
@@ -852,3 +855,30 @@ class TestDispatch:
         stopped = await self._send(wired, "/end")
         assert any("Player stopped" in reply for reply in stopped)
         assert any("Nothing is playing" in reply for reply in await self._send(wired, "/playing"))
+
+
+class TestSearchTellsTheTruthAboutLayers(TestDispatch):
+    """``/searchmusic`` looks at one layer; it must not imply that is all there is.
+
+    Subclasses ``TestDispatch`` to reuse the real started-plugin fixture.
+    """
+
+    async def test_empty_catalogue_points_at_the_remote_layers(self, wired) -> None:
+        replies = await _send_search(wired, "/musicsearch nothing-here")
+        text = "\n".join(replies)
+        assert "No matches" in text
+        assert "local catalogue" in text
+        # exactly one of the three honest next steps is offered
+        assert any(
+            marker in text for marker in ("/play", "resolve_endpoint", "yt-dlp")
+        ), text
+
+
+async def _send_search(wired, text: str) -> list[str]:
+    from aiogram.types import Update
+    from tests.telegram_harness import make_message
+
+    bot, dispatcher, recorder = wired
+    recorder.sent.clear()
+    await dispatcher.feed_update(bot, Update(update_id=9, message=make_message(bot, text, 424242)))
+    return recorder.replies()
