@@ -337,6 +337,7 @@ every change.
 | `tests/test_modules_services.py` | tokens, FileStore tenancy, Linkshare lifecycle, Leech adapters, Music sessions/transport |
 | `tests/test_api_modules.py` | every module route, tenancy, saver mirror, effective plugin state, SSE auth |
 | `tests/test_modules_contract.py` | manifests, disabled-module inertness, route coverage, page/nav coverage, honesty, tenant isolation |
+| `tests/test_webapp_transport.py` | a dashboard action (pause/skip/stop/remote play) drives the *real* started plugin and the bot's own queue; room isolation |
 | `tests/test_music_player.py`, `test_encoder.py`, `test_filestore.py`, `test_linkshare_leech.py`, `test_saver_pipeline.py` | per-module behaviour through the Telegram harness |
 
 Acceptance scenarios from the brief are exercised as: music session + queue +
