@@ -267,7 +267,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 732 tests
+python -m pytest -q          # 736 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -349,8 +349,9 @@ Everything is environment driven — see `.env.example`. Key settings:
   explicitly in the UI).
 - Voice-chat streaming still needs `pytgcalls` plus a signalling path; without it the player says
   `simulation` while the queue and controls remain real.
-- aria2, qBittorrent and rclone are not installed; the transfer engine reports those adapters as
-  unavailable instead of failing later. `yt-dlp` **is** wired (music search, page-link extraction,
+- aria2 is driven over its JSON-RPC when an operator points `daemon_endpoint` at one; qBittorrent
+  (torrents only) and rclone (destinations only) are refused where they cannot do the job rather
+  than substituted. `yt-dlp` **is** wired (music search, page-link extraction,
   `/leech -ytdl`) and the bundled `imageio-ffmpeg` wheel gives real encodes on a host with no system
   ffmpeg. Without `ffprobe`, metadata is read from the ffmpeg banner and the Studio says so.
 - MTProto (WZgram/Pyrogram) is an optional adapter, never the primary framework, and never a way to

@@ -205,7 +205,11 @@ class LeechPlugin(MeikoPlugin):
 
         # A flag such as ``-ytdl``/``-aria2`` selects the backend for *this* task;
         # without one the configured default is used.
-        chosen = pick_backend(flags, endpoint=str(self.config("daemon_endpoint", "")))
+        chosen = pick_backend(
+            flags,
+            endpoint=str(self.config("daemon_endpoint", "")),
+            secret=str(self.config("daemon_secret", "")),
+        )
         if chosen is not manager.backend:
             manager.backend = chosen
         job = asyncio.ensure_future(
@@ -296,6 +300,15 @@ class LeechPlugin(MeikoPlugin):
         builder.key_value("Reachable", "yes" if ready else "no", "check" if ready else "cross")
         ytdl = YtDlpBackend()
         builder.key_value("yt-dlp", "installed" if ytdl.available() else "not installed", "check" if ytdl.available() else "cross")
+        endpoint = str(self.config("daemon_endpoint", ""))
+        for name, label in (("aria2", "aria2"), ("qbittorrent", "qBittorrent"), ("rclone", "rclone")):
+            probe = DaemonBackend(name, endpoint, secret=str(self.config("daemon_secret", "")))
+            reachable = probe.available()
+            builder.key_value(
+                label,
+                "reachable" if reachable else ("not configured" if not endpoint else "unreachable"),
+                "check" if reachable else "cross",
+            )
         if not ready:
             builder.line(
                 "<i>Local copies and http(s) downloads work without a daemon. "

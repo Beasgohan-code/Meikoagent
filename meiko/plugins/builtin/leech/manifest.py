@@ -27,6 +27,12 @@ MANIFEST = PluginManifest(
             "default": "local",
             "label": "Transfer backend",
         },
+        "daemon_secret": {
+            "type": "string",
+            "default": "",
+            "secret": True,
+            "label": "aria2 RPC secret (only needed when the daemon requires one)",
+        },
         "daemon_endpoint": {"type": "string", "default": "", "label": "Daemon URL (aria2/qBittorrent/rclone RC)"},
         "max_active": {"type": "int", "default": 2, "label": "Concurrent transfers"},
         "max_per_user": {"type": "int", "default": 2, "label": "Concurrent transfers per user"},

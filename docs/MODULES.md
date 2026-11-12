@@ -359,9 +359,11 @@ every change.
 * **Real voice-chat streaming** needs `pytgcalls` + a signalling path; neither is
   installed. The player reports `simulation` and the queue/controls are real.
   Everything up to the call (queue, transport, resolution, mirror) is live.
-* **daemon transfers** (aria2/qBittorrent/rclone) report `available() == False`
-  until a daemon/remote is configured. A `-aria2` job **fails with the reason**
-  rather than silently downgrading to an HTTP copy.
+* **daemon transfers**: aria2 is driven over JSON-RPC (add-then-poll, with the
+  RPC secret) when `daemon_endpoint` answers; qBittorrent is only reachable for
+  torrents and rclone only as a *destination*, so a URL job with `-qbit`/`-rclone`
+  is refused with that reason. Nothing degrades silently to an HTTP copy, and
+  `/taskbackend` pings each daemon instead of listing a hopeful boolean.
 * **MTProto features** (WZgram) require the dependency plus an owner session.
 * **Only `ffmpeg` ships in the bundled wheel** (`imageio-ffmpeg`). Metadata then
   comes from the `ffmpeg -i` banner — same dict shape, no ffprobe — and the

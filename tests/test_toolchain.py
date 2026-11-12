@@ -242,7 +242,8 @@ class TestBackendSelection:
         task = manager.create("http://example.com/f.bin", 1, -100, flags={"aria2"})
         await manager.run(task, "/tmp/never-written")
         assert task.state.value == "failed"
-        assert "aria2" in task.error and "not wired" in task.error
+        assert "aria2" in task.error and "not reachable" in task.error
+        assert "daemon_endpoint" in task.error, "the failure has to say how to fix it"
         assert not os.path.exists("/tmp/never-written")
 
     def test_every_declared_backend_names_itself(self):
@@ -546,3 +547,108 @@ def _minimal_flac(min_block: int = 4096, max_block: int = 4096) -> bytes:
         + b"\x00" * 16  # md5
     )
     return b"fLaC" + streaminfo + b"\x00" * 64
+
+
+class TestDaemonRpc:
+    """A daemon is driven for real when it answers, and named when it does not."""
+
+    @pytest.mark.asyncio
+    async def test_aria2_rpc_is_actually_called(self, monkeypatch):
+        from meiko.plugins.builtin.leech.tasks import DaemonBackend
+
+        calls: list[dict] = []
+        statuses = [
+            {"status": "active", "completedLength": "10", "totalLength": "20"},
+            {"status": "complete", "completedLength": "20", "totalLength": "20"},
+        ]
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "meiko", "result": self._payload}
+
+        class FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, url, json=None, timeout=None):
+                calls.append(json)
+                if json["method"] == "aria2.addUri":
+                    assert json["params"][0] == "token:s3cret"
+                    return FakeResponse("gid-1")
+                return FakeResponse(statuses.pop(0))
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+        backend = DaemonBackend("aria2", "http://127.0.0.1:6800", secret="s3cret")
+        monkeypatch.setattr(DaemonBackend, "available", lambda self: True)
+        seen: list[tuple[int, int]] = []
+
+        async def progress(done, total):
+            seen.append((done, total))
+
+        # no sleeping in tests
+        real_sleep = __import__("asyncio").sleep
+        monkeypatch.setattr("asyncio.sleep", lambda _s: real_sleep(0))
+        produced = await backend.fetch("http://example.com/f.bin", "/tmp/f.bin", on_progress=progress)
+        assert produced == "/tmp/f.bin"
+        assert [c["method"] for c in calls] == ["aria2.addUri", "aria2.tellStatus", "aria2.tellStatus"]
+        assert seen == [(10, 20), (20, 20)]
+
+    @pytest.mark.asyncio
+    async def test_aria2_errors_are_surfaced(self, monkeypatch):
+        from meiko.plugins.builtin.leech.tasks import DaemonBackend
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "meiko", "error": {"message": "bad token"}}
+
+        class FakeClient:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, *a, **k):
+                return FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(DaemonBackend, "available", lambda self: True)
+        from meiko.plugins.builtin.leech.tasks import TransferError
+
+        with pytest.raises(TransferError, match="bad token"):
+            await DaemonBackend("aria2", "http://127.0.0.1:6800").fetch("http://e.com/x", "/tmp/x")
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_daemon_says_how_to_fix_it(self):
+        from meiko.plugins.builtin.leech.tasks import DaemonBackend, TransferError
+
+        with pytest.raises(TransferError, match="daemon_endpoint"):
+            await DaemonBackend("aria2", "http://127.0.0.1:1").fetch("http://e.com/x", "/tmp/x")
+
+    def test_qbittorrent_does_not_pretend_to_download_urls(self):
+        from meiko.plugins.builtin.leech.tasks import DaemonBackend
+
+        backend = DaemonBackend("qbittorrent", "http://127.0.0.1:8080")
+        assert backend.name == "qbittorrent"

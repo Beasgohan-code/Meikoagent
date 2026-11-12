@@ -29,6 +29,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 
@@ -182,11 +183,23 @@ class YtDlpBackend:
 
 
 class DaemonBackend:
-    """Placeholder for aria2/qBittorrent/rclone; usable only when the daemon answers."""
+    """aria2 / qBittorrent / rclone, driven over their own RPC when reachable.
 
-    def __init__(self, name: str, endpoint: str = "") -> None:
+    CBML starts and authenticates those daemons itself; that is a lot of process
+    management for a feature most deployments do not want, so here a daemon is
+    something an operator runs and points at (``daemon_endpoint``). The call is
+    made for real when the endpoint answers — including aria2's two-step
+    ``aria2.addUri`` + ``aria2.tellStatus`` polling — and the failure names the
+    endpoint when it does not. No path silently degrades to an HTTP copy.
+    """
+
+    RPC_METHODS = {"aria2": "aria2", "qbittorrent": "qbittorrent", "rclone": "rclone"}
+
+    def __init__(self, name: str, endpoint: str = "", *, secret: str = "", timeout: float = 15.0) -> None:
         self.name = name
         self.endpoint = endpoint
+        self.secret = secret
+        self.timeout = timeout
 
     def available(self) -> bool:
         if not self.endpoint:
@@ -201,8 +214,60 @@ class DaemonBackend:
         except Exception:
             return False
 
-    async def fetch(self, url: str, destination: str, *, on_progress=None) -> str:  # pragma: no cover - needs a daemon
-        raise TransferError(f"{self.name} daemon backend is not wired in this deployment")
+    def _rpc_url(self, path: str = "/jsonrpc") -> str:
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(self.endpoint if "://" in self.endpoint else f"http://{self.endpoint}")
+        return urlunparse((parsed.scheme or "http", parsed.netloc, path, "", "", ""))
+
+    async def _rpc(self, client: Any, method: str, params: list[Any]) -> Any:
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": "meiko", "method": method, "params": params}
+        if self.name == "aria2" and self.secret:
+            payload["params"] = [f"token:{self.secret}", *params]
+        response = await client.post(self._rpc_url(), json=payload, timeout=self.timeout)
+        response.raise_for_status()
+        body = response.json()
+        if body.get("error"):
+            raise TransferError(f"{self.name} refused the task: {body['error'].get('message', 'unknown error')}")
+        return body.get("result")
+
+    async def fetch(self, url: str, destination: str, *, on_progress=None) -> str:
+        if not self.available():
+            raise TransferError(
+                f"{self.name} daemon is not reachable at {self.endpoint or '(no endpoint configured)'}; "
+                "start it and set daemon_endpoint, or drop the flag to use the local copier"
+            )
+        if self.name == "rclone":
+            raise TransferError(
+                "the rclone remote must be a directory target (mirror -rclone), not a URL fetch; "
+                "use LeechTransferEngine.push with a CloudUploader"
+            )
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            if self.name == "aria2":
+                gid = await self._rpc(client, "aria2.addUri", [[url], {"dir": str(Path(destination).parent)}])
+                if not gid:
+                    raise TransferError("aria2 did not return a download id")
+                while True:
+                    await asyncio.sleep(1.0)
+                    status = await self._rpc(
+                        client, "aria2.tellStatus", [gid, ["status", "completedLength", "totalLength", "errorMessage"]]
+                    ) or {}
+                    if on_progress is not None:
+                        await on_progress(
+                            int(status.get("completedLength") or 0), int(status.get("totalLength") or 0)
+                        )
+                    if status.get("status") == "complete":
+                        return destination
+                    if status.get("status") in {"error", "removed"}:
+                        raise TransferError(
+                            f"aria2 failed: {status.get('errorMessage') or status.get('status')}"
+                        )
+            raise TransferError(
+                f"{self.name} RPC is reachable but this backend has no fetch implementation; "
+                "qBittorrent is only used for torrents (not wired in this build)"
+            )
 
 
 @dataclass
@@ -462,7 +527,9 @@ def magnet_available() -> bool:
     return any(importlib.util.find_spec(name) for name in ("aria2p", "qbittorrentapi", "libtorrent"))
 
 
-def pick_backend(flags: set[str] | None = None, *, endpoint: str = "", binary: str = "") -> TransferBackend:
+def pick_backend(
+    flags: set[str] | None = None, *, endpoint: str = "", binary: str = "", secret: str = ""
+) -> TransferBackend:
     """Resolve the backend a flag asks for, or explain why it cannot be used.
 
     Order of preference: an explicitly requested daemon (fails closed), then
@@ -476,11 +543,11 @@ def pick_backend(flags: set[str] | None = None, *, endpoint: str = "", binary: s
     if "ytdl" in flags:
         return YtDlpBackend(binary=path_of("ffmpeg"))
     if "aria2" in flags:
-        return DaemonBackend("aria2", endpoint)
+        return DaemonBackend("aria2", endpoint, secret=secret)
     if "qbit" in flags:
-        return DaemonBackend("qbittorrent", endpoint)
+        return DaemonBackend("qbittorrent", endpoint, secret=secret)
     if "rclone" in flags:
-        return DaemonBackend("rclone", endpoint)
+        return DaemonBackend("rclone", endpoint, secret=secret)
     return LocalBackend()
 
 

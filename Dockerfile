@@ -8,8 +8,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# ffmpeg brings ffprobe: the bundled imageio-ffmpeg wheel is a fallback for hosts
+# without a system package, but a real deployment should have both binaries.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl build-essential libpq-dev \
+    && apt-get install -y --no-install-recommends curl build-essential libpq-dev ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
