@@ -333,6 +333,11 @@ export const linkshare = {
   revoke: (botId: number, code: string) => api.post<{ revoked: boolean }>(`/linkshare/links/${code}/revoke?bot_id=${botId}`),
   batch: (botId: number, urls: string[], ttlHours = 24) =>
     api.post<{ batch: string; links: ShareLink[] }>(`/linkshare/batch?bot_id=${botId}`, { urls, ttl_hours: ttlHours }),
+  /** Check a URL against the same policy the backend enforces before submitting. */
+  validate: (url: string) =>
+    api.get<{ url: string; scheme: string; host: string; port: number | null; allowed: boolean; reason: string }>(
+      `/linkshare/validate?url=${encodeURIComponent(url)}`,
+    ),
   analytics: (botId: number) => api.get<LinkshareAnalytics>(`/linkshare/analytics?bot_id=${botId}`),
   settings: (botId: number) =>
     api.get<{ settings: Record<string, unknown>; defaults: Record<string, unknown> }>(`/linkshare/settings?bot_id=${botId}`),

@@ -107,6 +107,17 @@ def parse_request(text: str, *, video: bool = False) -> PlayRequest:
     return request
 
 
+def check_play_url(url: str) -> str:
+    """Public http(s) or a ``t.me`` post; everything else is refused.
+
+    ``t.me`` is allowed because the player does not fetch it — the bot copies the
+    post. Every other URL ends up in a downloader, so the shared policy applies.
+    """
+    from meiko.modules.urls import check
+
+    return check(url, allow_telegram=True)
+
+
 def looks_like_url(text: str) -> bool:
     if not text:
         return False
@@ -432,6 +443,10 @@ class MediaResolver:
         if request.url:
             if request.url.startswith("tg://") or "t.me/" in request.url:
                 return ResolveOutcome(layer="link", reason="telegram link – resolve with /save or reply a file")
+            try:
+                check_play_url(request.url)
+            except Exception as exc:  # wrong scheme, private host, credentials
+                return ResolveOutcome(layer="none", reason=str(exc))
             track = track_from_url(
                 request.url,
                 video=request.video,
@@ -503,6 +518,7 @@ __all__ = [
     "site_search_url",
     "split_site",
     "CatalogueBackend",
+    "check_play_url",
     "MediaResolver",
     "PlayRequest",
     "QUALITY_FLAGS",

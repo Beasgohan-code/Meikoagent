@@ -236,6 +236,7 @@ Bot API 10.4 widgets are handled by a typed adapter, and `allowed_updates` inclu
 | Secrets | Bot tokens sealed with Fernet; API keys stored hashed; tokens never serialised to the browser |
 | Code execution | No uploaded Python, no `eval`/`exec`; declarative commands and workflows are validated data |
 | Transport | Same-origin proxy for the console; webhook secret header verified for Telegram updates |
+| Outbound URLs | One policy (`meiko/modules/urls.py`): http(s) only, no credentials, no loopback/private/link-local targets — enforced where the bytes move, and redacted in errors |
 
 ---
 
@@ -266,7 +267,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 688 tests
+python -m pytest -q          # 732 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 

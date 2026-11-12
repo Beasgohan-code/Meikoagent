@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from meiko.modules.links import short_code, sign_token, verify_token
+from meiko.modules.urls import UrlRejected, check as check_url
 
 
 class LinkError(RuntimeError):
@@ -101,6 +102,10 @@ class LinkshareService:
     ) -> ShareLink:
         if not url:
             raise LinkError("a link needs a URL")
+        try:
+            url = check_url(url)
+        except UrlRejected as exc:
+            raise LinkError(str(exc)) from exc
         document = self._read(scope)
         code = short_code(8)
         while code in document["links"]:
@@ -131,6 +136,13 @@ class LinkshareService:
         max_claims: int = 0,
         bot_id: int = 0,
     ) -> tuple[str, list[ShareLink]]:
+        # validate the whole batch first: creating half a batch and then raising
+        # would leave links behind that the caller was told were refused
+        for candidate in urls:
+            try:
+                check_url(candidate)
+            except UrlRejected as exc:
+                raise LinkError(str(exc)) from exc
         batch = uuid.uuid4().hex[:8]
         links = [
             self.create(

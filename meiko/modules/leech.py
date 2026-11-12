@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from urllib.parse import urlparse
 
 from meiko.modules.media import human_size, safe_name
+from meiko.modules.urls import UrlRejected, check as check_url
 
 
 class TransferError(RuntimeError):
@@ -122,6 +123,11 @@ class HTTPDownloader:
     async def validate(self, source: str, *, max_bytes: int = 0) -> dict[str, Any]:
         if not self.supports(source):
             raise TransferError("only http(s) URLs are supported by this downloader", retryable=False)
+        try:
+            check_url(source)
+        except UrlRejected as exc:
+            # not retryable: the same URL will always be refused
+            raise TransferError(str(exc), retryable=False) from exc
         import httpx
 
         limit = max_bytes or self.max_bytes

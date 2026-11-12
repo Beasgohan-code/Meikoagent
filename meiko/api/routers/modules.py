@@ -31,6 +31,7 @@ from meiko.modules.leech import TransferEngine, TransferError
 from meiko.modules.linkshare import LinkError, LinkshareService
 from meiko.modules.mtproto import capabilities as mtproto_capabilities
 from meiko.modules.music import MusicSessions, MusicTransport
+from meiko.modules import urls as module_urls
 from meiko.modules.store import get_module_store
 from meiko.services.core import BotService
 
@@ -425,6 +426,12 @@ class LinkCreateRequest(BaseModel):
     title: str = ""
     ttl_hours: int = 24
     max_claims: int = 0
+
+
+@router.get("/linkshare/validate")
+async def linkshare_validate(url: str, auth: CurrentAuth) -> dict[str, Any]:
+    """Check a URL against the shared policy before the user submits a form."""
+    return module_urls.describe(url)
 
 
 @router.get("/linkshare/links")
@@ -896,14 +903,25 @@ async def linkshare_batch(
     payload: BatchRequest, auth: CurrentAuth, session: SessionDep, bot_id: int
 ) -> dict[str, Any]:
     await _require_bot(session, auth, bot_id)
-    batch, links = _linkshare().create_batch(
-        _scope(bot_id),
-        urls=payload.urls,
-        owner_id=auth.user.id,
-        ttl_hours=payload.ttl_hours,
-        max_claims=payload.max_claims,
-        bot_id=bot_id,
-    )
+    # refuse the whole batch up-front: a partial create would leave links behind
+    refused = []
+    for url in payload.urls:
+        why = module_urls.reason(url)
+        if why:
+            refused.append({"url": url, "reason": why})
+    if refused:
+        raise error(400, "invalid_urls", "some URLs are not allowed", rejected=refused)
+    try:
+        batch, links = _linkshare().create_batch(
+            _scope(bot_id),
+            urls=payload.urls,
+            owner_id=auth.user.id,
+            ttl_hours=payload.ttl_hours,
+            max_claims=payload.max_claims,
+            bot_id=bot_id,
+        )
+    except LinkError as exc:
+        raise error(400, "invalid", str(exc)) from exc
     return {"batch": batch, "links": [link.to_dict() for link in links]}
 
 

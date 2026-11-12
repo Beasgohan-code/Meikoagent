@@ -28,6 +28,15 @@ function CreateLink({ botId }: { botId: number }) {
   const [created, setCreated] = useState<ShareLink | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
+  // ask the backend policy while typing, so a refusal is explained before submit
+  const check = useQuery({
+    queryKey: ["linkshare-validate", url],
+    queryFn: () => linkshare.validate(url.trim()),
+    enabled: /^https?:\/\//i.test(url.trim()) && url.trim().length > 10,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   const create = useMutation({
     mutationFn: () => linkshare.create(botId, url.trim(), title.trim(), ttl, maxClaims),
     onSuccess: (result) => {
@@ -60,8 +69,20 @@ function CreateLink({ botId }: { botId: number }) {
 
       <Card>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="URL to share" hint="The link the recipient should end up at.">
-            <input className="input" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com/file.zip" />
+          <Field
+            label="URL to share"
+            hint={
+              check.data && !check.data.allowed
+                ? check.data.reason
+                : "Public http(s) only — loopback, private hosts and credentials are refused."
+            }
+          >
+            <input
+              className={`input ${check.data && !check.data.allowed ? "border-rose-500/50" : ""}`}
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder="https://example.com/file.zip"
+            />
           </Field>
           <Field label="Label" hint="Only you see this in the manager.">
             <input className="input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Q3 report" />
@@ -73,7 +94,11 @@ function CreateLink({ botId }: { botId: number }) {
             <input className="input" type="number" min={0} value={maxClaims} onChange={(event) => setMaxClaims(Number(event.target.value))} />
           </Field>
         </div>
-        <button className="btn-primary mt-3" disabled={!url.trim() || create.isPending} onClick={() => create.mutate()}>
+        <button
+          className="btn-primary mt-3"
+          disabled={!url.trim() || create.isPending || check.data?.allowed === false}
+          onClick={() => create.mutate()}
+        >
           <Link2 className="h-4 w-4" /> Create protected link
         </button>
       </Card>

@@ -156,6 +156,20 @@ class LeechPlugin(MeikoPlugin):
                 ),
             )
             return
+        remote = "://" in urls[0]
+        if "ytdl" not in flags and remote:
+            # a yt-dlp target is a *site* URL (extraction decides what to fetch);
+            # anything else goes straight to an HTTP client, so it is checked now.
+            # Local paths are validated by the local downloader instead.
+            from meiko.modules.urls import UrlRejected, check as check_url
+
+            try:
+                check_url(urls[0])
+            except UrlRejected as exc:
+                await message_obj.reply(
+                    message("URL refused", "warn").line(esc(str(exc)), raw=True).build()
+                )
+                return
         ok, reason = manager.can_accept(message_obj.from_user.id)
         if not ok:
             await message_obj.reply(message("Cannot start", "warn").line(esc(reason), raw=True).build())

@@ -233,6 +233,34 @@ The `imageio-ffmpeg` wheel is deliberately in `requirements.txt`: it makes
 "clone and run" produce real encodes on a machine with no system packages, which
 is the difference between a CI test and a toy.
 
+### 4.2 URL policy (`meiko/modules/urls.py`)
+
+Six modules accept a link from a stranger. The upstream bots each answered
+"is this URL safe?" differently, and three answers were wrong. One policy now:
+
+| rule | why | example refused |
+| --- | --- | --- |
+| `http`/`https` only | every consumer pipes the URL into a downloader or an outbound client | `file:///etc/passwd` |
+| no userinfo | `https://user:pass@host` leaks secrets into logs and chat | `https://a:b@example.com/` |
+| no loopback / private / link-local / reserved literal | SSRF: a bot that fetches `127.0.0.1` is a confused deputy | `http://169.254.169.254/latest/meta-data/` |
+| no `.local`/`.internal`/`.lan`/`.home.arpa` hosts | orchestration and printer names are not the public internet | `https://db.internal/` |
+| `t.me` only where the bot resolves it | the player hands Telegram posts to the saver instead of fetching them | `https://t.me/c/1/2` in `/leech` |
+| no control characters, ≤ 2048 chars | header injection and log spam | `https://example.com/\r\nHost: x` |
+
+Enforced where the bytes move, not in a helper nobody calls: linkshare creation
+(so a stored link cannot become a later SSRF), leech's HTTP downloader *before*
+it connects (non-retryable), the music resolver, and the API batch endpoint
+(which refuses the whole batch rather than leaving half of it behind).
+
+Error strings **redact** the URL (userinfo and query removed) because they are
+sent to chat and written to logs. `GET /api/v1/linkshare/validate?url=…` exposes
+the same verdict, and the Create-link form uses it while the user types.
+
+Deliberately **not** done: DNS resolution at validation time. A public hostname
+that resolves to a private address is a network-level problem (egress policy,
+DNS pinning), not something a pure validator can decide without making every
+call slow and flaky. That limit is stated here rather than papered over.
+
 ## 5. Licensing
 
 | upstream | licence | what Meiko may do |
@@ -375,6 +403,7 @@ test asserts a capability that the host might not have.
 | `tests/test_api_modules.py` | every module route, tenancy, saver mirror, effective plugin state, SSE auth |
 | `tests/test_modules_contract.py` | manifests, disabled-module inertness, route coverage, page/nav coverage, honesty, tenant isolation |
 | `tests/test_toolchain.py` | binary resolution order, banner parsing, a real encode/probe, yt-dlp plumbing (stubbed), daemon flags failing closed, mutagen round-trips, telemetry/encoder agreement |
+| `tests/test_url_policy.py` | 19 refusals and 5 acceptances, then the same rules asserted through linkshare, leech, music and the API validator |
 | `tests/test_webapp_transport.py` | a dashboard action (pause/skip/stop/remote play) drives the *real* started plugin and the bot's own queue; room isolation |
 | `tests/test_music_player.py`, `test_encoder.py`, `test_filestore.py`, `test_linkshare_leech.py`, `test_saver_pipeline.py` | per-module behaviour through the Telegram harness |
 
