@@ -12,7 +12,14 @@ from meiko.db.models import BotAccount
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import FileTooLarge, QuotaExceeded, Workspace, human_size, safe_filename
+from meiko.plugins.support import (
+    OwnCommand,
+    FileTooLarge,
+    QuotaExceeded,
+    Workspace,
+    human_size,
+    safe_filename,
+)
 from meiko.ui import Btn, esc, keyboard, message
 
 from .manifest import MANIFEST
@@ -21,6 +28,9 @@ from .store import StoreError, StoredFile, VaultIndex
 MEGABYTE = 1024 * 1024
 TAG_RE = re.compile(r"#([\w-]{2,24})")
 
+
+#: Only dispatch commands this package declares – never the whole "/" space.
+OWN_COMMAND = OwnCommand(MANIFEST.commands)
 
 @plugin
 class FileStorePlugin(MeikoPlugin):
@@ -44,7 +54,7 @@ class FileStorePlugin(MeikoPlugin):
         self._workspace.ensure()
         self._index = VaultIndex(ctx, self._workspace)
         router = Router(name="plugin:file_store")
-        router.message.register(self.on_message, F.text.startswith("/"))
+        router.message.register(self.on_message, F.text.startswith("/"), OWN_COMMAND)
         ctx.add_router(router)
         if ctx.can("scheduler"):
             ctx.schedule("sweep", 3600 * 6, self.sweep)

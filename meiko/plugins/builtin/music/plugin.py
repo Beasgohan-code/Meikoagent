@@ -10,7 +10,13 @@ from aiogram.types import BufferedInputFile, FSInputFile, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import PluginState, Workspace, human_size, safe_filename
+from meiko.plugins.support import (
+    OwnCommand,
+    PluginState,
+    Workspace,
+    human_size,
+    safe_filename,
+)
 from meiko.ui import Btn, esc, keyboard, message
 
 from .id3 import TrackTags, is_audio, read_tags, write_tag
@@ -36,6 +42,9 @@ USAGE = (
 )
 
 
+#: Only dispatch commands this package declares – never the whole "/" space.
+OWN_COMMAND = OwnCommand(MANIFEST.commands)
+
 @plugin
 class MusicPlugin(MeikoPlugin):
     manifest: PluginManifest = MANIFEST
@@ -59,7 +68,8 @@ class MusicPlugin(MeikoPlugin):
             ttl_seconds=1800,
         )
         router = Router(name="plugin:music")
-        router.message.register(self.on_message, F.text | F.audio)
+        router.message.register(self.on_audio, F.audio)
+        router.message.register(self.on_command_message, F.text.startswith("/"), OWN_COMMAND)
         ctx.add_router(router)
 
     async def on_stop(self, ctx: PluginContext) -> None:
@@ -72,10 +82,10 @@ class MusicPlugin(MeikoPlugin):
             await state.set(INDEX_KEY, self._library.to_list())
 
     # -- routing ---------------------------------------------------------
-    async def on_message(self, message_obj: Message, **_: object) -> None:
-        if message_obj.text and message_obj.text.startswith("/"):
-            await self.on_command(message_obj)
-            return
+    async def on_command_message(self, message_obj: Message, **_: object) -> None:
+        await self.on_command(message_obj)
+
+    async def on_audio(self, message_obj: Message, **_: object) -> None:
         if message_obj.audio and bool(self.config("auto_tag", True)):
             await self.index_audio(message_obj, message_obj.audio)
 

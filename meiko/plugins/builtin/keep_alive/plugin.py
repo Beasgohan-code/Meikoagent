@@ -11,7 +11,11 @@ from aiogram.types import Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import PluginState, scope_owner
+from meiko.plugins.support import (
+    OwnCommand,
+    PluginState,
+    scope_owner,
+)
 from meiko.ui import esc, message
 
 from .manifest import MANIFEST
@@ -19,6 +23,9 @@ from .watchdog import HeartbeatTracker, format_duration, next_ping_due, utcnow
 
 STATE_KEY = "heartbeat:state"
 
+
+#: Only dispatch commands this package declares – never the whole "/" space.
+OWN_COMMAND = OwnCommand([*MANIFEST.commands, "ping", "heartbeat"])
 
 @plugin
 class KeepAlivePlugin(MeikoPlugin):
@@ -39,7 +46,7 @@ class KeepAlivePlugin(MeikoPlugin):
         )
         self._owner_id, _ = await scope_owner(ctx)
         router = Router(name="plugin:keep_alive")
-        router.message.register(self.on_command, F.text.startswith("/"))
+        router.message.register(self.on_command, F.text.startswith("/"), OWN_COMMAND)
         ctx.add_router(router)
         ctx.schedule(
             "self_ping",

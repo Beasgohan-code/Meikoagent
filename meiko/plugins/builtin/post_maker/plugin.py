@@ -10,7 +10,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import PluginState
+from meiko.plugins.support import (
+    OwnCommand,
+    PluginState,
+)
 from meiko.ui import esc, message
 
 from .manifest import MANIFEST
@@ -38,6 +41,9 @@ USAGE = (
 )
 
 
+#: Only dispatch commands this package declares – never the whole "/" space.
+OWN_COMMAND = OwnCommand(MANIFEST.commands)
+
 @plugin
 class PostMakerPlugin(MeikoPlugin):
     manifest: PluginManifest = MANIFEST
@@ -62,7 +68,7 @@ class PostMakerPlugin(MeikoPlugin):
             await self._state.get(QUEUE_KEY), limit=int(self.config("queue_limit", 50))
         )
         router = Router(name="plugin:post_maker")
-        router.message.register(self.on_message, F.text)
+        router.message.register(self.on_message, F.text, OWN_COMMAND)
         ctx.add_router(router)
         ctx.schedule("post_queue", 30, self.flush_queue, run_immediately=True)
 

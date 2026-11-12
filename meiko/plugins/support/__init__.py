@@ -15,12 +15,15 @@ from .files import (
     safe_filename,
     sanitize_ext,
 )
+from .filters import OwnCommand, command_name
 from .gates import CapabilityGate, GateDenied
 from .owners import scope_owner
 from .state import PluginState, read_mirror, state_dir, write_mirror
 
 __all__ = [
     "CapabilityGate",
+    "OwnCommand",
+    "command_name",
     "FileTooLarge",
     "GateDenied",
     "QuotaExceeded",

@@ -8,7 +8,12 @@ from aiogram.types import FSInputFile, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import Workspace, human_size, safe_filename
+from meiko.plugins.support import (
+    OwnCommand,
+    Workspace,
+    human_size,
+    safe_filename,
+)
 from meiko.ui import Btn, esc, keyboard, message
 
 from .engine import DEFAULT_TEMPLATE, clean_text, guess_media_type, plan_rename
@@ -24,6 +29,9 @@ TUTORIAL = (
     "<code>/testrename Movie.2023.1080p.mkv</code>"
 )
 
+
+#: Only dispatch commands this package declares – never the whole "/" space.
+OWN_COMMAND = OwnCommand(MANIFEST.commands)
 
 @plugin
 class RenamerPlugin(MeikoPlugin):
@@ -44,7 +52,7 @@ class RenamerPlugin(MeikoPlugin):
             ttl_seconds=86400,
         )
         router = Router(name="plugin:renamer")
-        router.message.register(self.on_command, F.text.startswith("/"))
+        router.message.register(self.on_command, F.text.startswith("/"), OWN_COMMAND)
         ctx.add_router(router)
         saved = await ctx.get_state("template")
         if isinstance(saved, str) and saved.strip():

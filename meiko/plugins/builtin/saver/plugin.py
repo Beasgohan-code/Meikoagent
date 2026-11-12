@@ -11,7 +11,13 @@ from aiogram.types import BufferedInputFile, FSInputFile, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
-from meiko.plugins.support import PluginState, Workspace, human_size, safe_filename
+from meiko.plugins.support import (
+    OwnCommand,
+    PluginState,
+    Workspace,
+    human_size,
+    safe_filename,
+)
 from meiko.ui import Btn, esc, keyboard, message
 
 from .captions import CaptionContext, render_caption
@@ -29,6 +35,9 @@ from .state import (
 )
 
 MEDIA_ATTRIBUTES = ("document", "video", "audio", "photo", "animation", "voice")
+
+#: Commands owned by this plugin – everything else must fall through.
+
 
 
 def attachment_of(source: Message) -> Any:
@@ -57,6 +66,9 @@ def describe_attachment(kind: str, media: Any) -> dict[str, Any]:
     }
 
 
+#: Only dispatch commands this package declares – never the whole "/" space.
+OWN_COMMAND = OwnCommand(MANIFEST.commands)
+
 @plugin
 class SaverPlugin(MeikoPlugin):
     manifest: PluginManifest = MANIFEST
@@ -83,7 +95,10 @@ class SaverPlugin(MeikoPlugin):
         )
         self._lock = asyncio.Lock()
         router = Router(name="plugin:saver")
-        router.message.register(self.on_message, F.text)
+        # Own namespace only: a catch-all ``F.text`` would swallow commands of
+        # plugins registered later in the dispatcher.
+        router.message.register(self.on_own_command, F.text.startswith("/"), OWN_COMMAND)
+        router.message.register(self.on_link_text, F.text.contains("t.me/"))
         ctx.add_router(router)
 
     async def on_stop(self, ctx: PluginContext) -> None:
@@ -107,15 +122,15 @@ class SaverPlugin(MeikoPlugin):
         await state.set(INDEX_KEY, self._index.to_list())
 
     # -- router ----------------------------------------------------------
-    async def on_message(self, message_obj: Message, **_: object) -> None:
-        text = message_obj.text or ""
-        if text.startswith("/"):
-            await self.on_command(message_obj)
+    async def on_own_command(self, message_obj: Message, **_: object) -> None:
+        await self.on_command(message_obj)
+
+    async def on_link_text(self, message_obj: Message, **_: object) -> None:
+        if not bool(self.config("auto_save", False)):
             return
-        if bool(self.config("auto_save", False)) and "t.me/" in text:
-            plan = plan_links(text)
-            if plan.ok:
-                await self.execute_plan(message_obj, plan)
+        plan = plan_links(message_obj.text or "")
+        if plan.ok:
+            await self.execute_plan(message_obj, plan)
 
     async def on_command(self, message_obj: Message) -> None:
         text = (message_obj.text or "").strip()

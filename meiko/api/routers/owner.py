@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
-from meiko.api.deps import CurrentAuth, OwnerAuth, SessionDep, error
+from meiko.api.deps import OwnerAuth, SessionDep, error
 from meiko.api.schemas import UserResponse
 from meiko.db.models import (
     AuditLog,
@@ -18,7 +18,7 @@ from meiko.db.models import (
     User,
     Worker,
 )
-from meiko.services.core import AuditService, BotService, UserService
+from meiko.services.core import AuditService, UserService
 
 router = APIRouter(prefix="/owner", tags=["owner"])
 
