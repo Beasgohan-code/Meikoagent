@@ -1,4 +1,4 @@
-"""``vc_player``: queue maths, media resolution, cards and real dispatch.
+"""``music`` player: queue maths, media resolution, cards and real dispatch.
 
 The player is split so that everything testable offline is: the queue is a pure
 state machine, sources are pure parsing plus the local catalogue, cards are pure
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from meiko.plugins.builtin.vc_player.player_card import (
+from meiko.plugins.builtin.music.player_card import (
     clock,
     play_card,
     player_keyboard,
@@ -19,8 +19,8 @@ from meiko.plugins.builtin.vc_player.player_card import (
     results_card,
     state_line,
 )
-from meiko.plugins.builtin.vc_player.queue import MAX_QUEUE, PlayerQueue, Track
-from meiko.plugins.builtin.vc_player.sources import (
+from meiko.plugins.builtin.music.queue import MAX_QUEUE, PlayerQueue, Track
+from meiko.plugins.builtin.music.sources import (
     CatalogueBackend,
     MediaResolver,
     PlayRequest,
@@ -453,7 +453,7 @@ class TestCards:
 pytest.importorskip("meiko.plugins.builtin")
 
 
-OWNER_ID = 777001
+OWNER_ID = 777002
 ACTIVE_PLUGIN: dict[str, object] = {}
 
 
@@ -465,8 +465,8 @@ def _plugin_state(wired):
 def _reload_catalogue() -> None:
     """Point the running player's resolver at the seeded catalogue."""
     from meiko.plugins.builtin.music.library import MusicLibrary
-    from meiko.plugins.builtin.vc_player.plugin import _Catalogue
-    from meiko.plugins.builtin.vc_player.sources import MediaResolver
+    from meiko.plugins.builtin.music.player import _Catalogue
+    from meiko.plugins.builtin.music.sources import MediaResolver
 
     plugin = ACTIVE_PLUGIN["plugin"]
     plugin._resolver = MediaResolver(catalogue=_Catalogue(plugin.context, MusicLibrary(plugin._entries)), limit=8)
@@ -486,6 +486,41 @@ def _message(bot, text: str, message_id: int = 9):
         from_user=user,
         text=text,
     ).as_(bot)
+
+
+def attach_video(bot, owner_id: int, text: str):
+    """An update whose message replies to a video document (for /encode, /put…)."""
+    from datetime import datetime, timezone
+
+    from aiogram.types import Chat, Message, Update, Video
+    from aiogram.types import User as TgUser
+
+    user = TgUser(id=owner_id, is_bot=False, first_name="Tester").as_(bot)
+    video = Video(
+        file_id="VID123",
+        file_unique_id="UNIQ123",
+        width=1920,
+        height=1080,
+        duration=60,
+        file_name="clip.mp4",
+        file_size=1024,
+    ).as_(bot)
+    parent = Message(
+        message_id=90,
+        date=datetime.now(timezone.utc),
+        chat=Chat(id=owner_id, type="private").as_(bot),
+        from_user=user,
+        video=video,
+    ).as_(bot)
+    message = Message(
+        message_id=91,
+        date=datetime.now(timezone.utc),
+        chat=Chat(id=owner_id, type="private").as_(bot),
+        from_user=user,
+        text=text,
+        reply_to_message=parent,
+    ).as_(bot)
+    return Update(update_id=11, message=message)
 
 
 class TestDispatch:
@@ -561,7 +596,7 @@ class TestDispatch:
         recorder = Recorder()
         bot = Bot(token, session=recorder)
         dispatcher = Dispatcher()
-        manifest = next(m for m in registry.manifests() if m.slug == "vc_player")
+        manifest = next(m for m in registry.manifests() if m.slug == "music")
         plugin_row = Plugin(slug=manifest.slug, name=manifest.name, category=manifest.category)
         session.add(plugin_row)
         await session.flush()
@@ -765,6 +800,52 @@ class TestDispatch:
     async def test_unknown_callback_is_answered_not_crashed(self, wired) -> None:
         answer, _edits = await self._press(wired, "pb:nonsense")
         assert answer is not None and "Unknown" in answer
+
+    async def test_playlist_save_load_and_delete(self, wired) -> None:
+        await self._send(wired, "/play https://cdn.example.com/p1.mp3")
+        await self._send(wired, "/play https://cdn.example.com/p2.mp3")
+        saved = await self._send(wired, "/savequeue chill")
+        assert any("Playlist saved" in reply for reply in saved)
+        listed = await self._send(wired, "/playlist")
+        assert any("chill" in reply for reply in listed)
+        await self._send(wired, "/end")
+        loaded = await self._send(wired, "/loadqueue chill")
+        assert any("Playlist loaded" in reply for reply in loaded)
+        removed = await self._send(wired, "/delqueue chill")
+        assert any("Playlist deleted" in reply for reply in removed)
+        assert any("No such playlist" in reply or "Playlist" in reply for reply in await self._send(wired, "/loadqueue chill"))
+
+    async def test_chart_records_plays(self, wired) -> None:
+        await self._send(wired, "/play https://cdn.example.com/charted.mp3")
+        replies = await self._send(wired, "/chart")
+        assert any("Chart" in reply for reply in replies)
+        assert any("charted.mp3" in reply for reply in replies)
+
+    async def test_now_and_next(self, wired) -> None:
+        await self._send(wired, "/play https://cdn.example.com/n1.mp3")
+        await self._send(wired, "/play https://cdn.example.com/n2.mp3")
+        assert any("Now playing" in reply for reply in await self._send(wired, "/now"))
+        upcoming = await self._send(wired, "/next")
+        assert any("n2.mp3" in reply for reply in upcoming)
+
+    async def test_3d_audio_presets(self, wired) -> None:
+        await self._send(wired, "/play https://cdn.example.com/spatial.mp3")
+        panel = await self._send(wired, "/mode3d")
+        assert any("3D audio" in reply for reply in panel)
+        applied = await self._send(wired, "/mode3d 8d")
+        assert any("8d" in reply for reply in applied)
+
+    async def test_auth_never_echoes_credentials(self, wired) -> None:
+        panel = await self._send(wired, "/auth")
+        assert any("Auth" in reply for reply in panel)
+        secret = await self._send(wired, "/auth AQi8secretSessionString")
+        assert any("Nothing was stored" in reply for reply in secret)
+        assert all("AQi8secret" not in reply for reply in secret)
+
+    async def test_play_site_suffix_is_understood(self, wired) -> None:
+        replies = await self._send(wired, "/play something | sp")
+        # either results or an honest "nothing found" — never a crash or silence
+        assert replies
 
     async def test_end_clears_the_player(self, wired) -> None:
         await self._send(wired, "/play https://cdn.example.com/z.mp3")

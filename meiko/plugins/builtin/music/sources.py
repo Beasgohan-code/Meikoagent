@@ -343,6 +343,12 @@ class MediaResolver:
 
 __all__ = [
     "AUDIO_EXT",
+    "Playlist",
+    "PlaylistManager",
+    "SITES",
+    "parse_range",
+    "site_search_url",
+    "split_site",
     "CatalogueBackend",
     "MediaResolver",
     "PlayRequest",
@@ -364,3 +370,175 @@ __all__ = [
     "vc_available",
     "youtube_id",
 ]
+
+
+# --------------------------------------------------------------- playlists
+@dataclass
+class Playlist:
+    """A named, ordered list of tracks (a ``/queue save`` snapshot)."""
+
+    name: str
+    tracks: list[Track] = field(default_factory=list)
+    owner_id: int = 0
+    created_at: int = 0
+    chart: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "tracks": [track.to_dict() for track in self.tracks],
+            "owner_id": self.owner_id,
+            "created_at": self.created_at,
+            "chart": self.chart,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "Playlist":
+        row = data if isinstance(data, dict) else {}
+        return cls(
+            name=str(row.get("name") or "playlist"),
+            tracks=[Track.from_dict(t) for t in row.get("tracks") or [] if isinstance(t, dict)],
+            owner_id=int(row.get("owner_id") or 0),
+            created_at=int(row.get("created_at") or 0),
+            chart=bool(row.get("chart")),
+        )
+
+
+#: ``site`` shorthand → a resolver/back-end hint the UI can show and a link to open.
+SITES: dict[str, str] = {
+    "yt": "https://music.youtube.com/search?q={q}",
+    "youtube": "https://www.youtube.com/results?search_query={q}",
+    "sp": "https://open.spotify.com/search/{q}",
+    "spotify": "https://open.spotify.com/search/{q}",
+    "am": "https://music.apple.com/us/search?term={q}",
+    "apple": "https://music.apple.com/us/search?term={q}",
+    "sc": "https://soundcloud.com/search?q={q}",
+    "soundcloud": "https://soundcloud.com/search?q={q}",
+    "js": "https://www.jiosaavn.com/search/{q}",
+    "jiosaavn": "https://www.jiosaavn.com/search/{q}",
+    "rd": "https://www.radio-browser.info/search?q={q}",
+    "radio": "https://www.radio-browser.info/search?q={q}",
+}
+#: Playeon-style suffix shorthand: ``/play believer | sp``.
+SITE_SUFFIX = re.compile(r"\|\s*([a-z]{2,10})\s*$", re.I)
+
+
+def split_site(argument: str) -> tuple[str, str]:
+    """Split ``"believer | sp"`` into ``("believer", "sp")``; site may be empty."""
+    match = SITE_SUFFIX.search(argument or "")
+    if not match:
+        return (argument or "").strip(), ""
+    site = match.group(1).lower()
+    return (argument[: match.start()].strip(), site if site in SITES else "")
+
+
+def site_search_url(site: str, query: str) -> str:
+    """A deep link the user can open when the bot cannot resolve the site itself."""
+    template = SITES.get(site.lower(), "")
+    if not template:
+        return ""
+    from urllib.parse import quote_plus
+
+    return template.format(q=quote_plus(query))
+
+
+class PlaylistManager:
+    """Playlist + chart storage on top of a plugin state store (durable)."""
+
+    KEY = "playlists"
+
+    def __init__(self, store: Any, *, limit: int = 40, chart_size: int = 30) -> None:
+        self.store = store
+        self.limit = limit
+        self.chart_size = chart_size
+        self.playlists: dict[str, Playlist] = {}
+        self.plays: dict[str, int] = {}
+        self._dirty = False
+
+    async def load(self) -> "PlaylistManager":
+        raw = await self.store.get(self.KEY, None) or {}
+        if isinstance(raw, dict):
+            self.playlists = {
+                name: Playlist.from_dict(row) for name, row in (raw.get("playlists") or {}).items()
+            }
+            self.plays = {str(k): int(v) for k, v in (raw.get("plays") or {}).items()}
+        return self
+
+    async def save(self) -> None:
+        if self.store is None:
+            return
+        await self.store.set(
+            self.KEY,
+            {
+                "playlists": {name: pl.to_dict() for name, pl in self.playlists.items()},
+                "plays": self.plays,
+            },
+        )
+        self._dirty = False
+
+    # -- playlists --------------------------------------------------------
+    def names(self) -> list[str]:
+        return sorted(self.playlists)
+
+    def get(self, name: str) -> Playlist | None:
+        return self.playlists.get((name or "").strip().lower())
+
+    def put(self, playlist: Playlist) -> Playlist:
+        name = playlist.name.strip().lower()[:40]
+        playlist.name = name
+        self.playlists[name] = playlist
+        if len(self.playlists) > self.limit:
+            oldest = min(self.playlists.values(), key=lambda pl: pl.created_at or 0)
+            if oldest.name != name:
+                self.playlists.pop(oldest.name, None)
+        self._dirty = True
+        return playlist
+
+    def delete(self, name: str) -> bool:
+        return self.playlists.pop((name or "").strip().lower(), None) is not None
+
+    # -- charts -----------------------------------------------------------
+    def record_play(self, track: Track) -> None:
+        key = track.video_id or track.source or track.title
+        if not key:
+            return
+        self.plays[key] = self.plays.get(key, 0) + 1
+        self._dirty = True
+
+    def chart_tracks(self, universe: list[Track]) -> list[Track]:
+        """Most-played first, restricted to tracks we can still resolve."""
+        by_key = {(t.video_id or t.source or t.title): t for t in universe}
+        ranked = sorted(self.plays.items(), key=lambda item: item[1], reverse=True)
+        out: list[Track] = []
+        for key, plays in ranked:
+            track = by_key.get(key)
+            if track is None:
+                continue
+            track.extra["plays"] = plays
+            out.append(track)
+            if len(out) >= self.chart_size:
+                break
+        return out
+
+
+def parse_range(argument: str, maximum: int) -> list[int] | None:
+    """``"1-5,8"`` → ``[1,2,3,4,5,8]``; ``None`` when unparsable, ``[]`` when out of bounds."""
+    if not (argument or "").strip():
+        return None
+    picks: list[int] = []
+    for chunk in argument.replace(" ", ",").split(","):
+        if not chunk:
+            continue
+        if "-" in chunk:
+            start, _, end = chunk.partition("-")
+            if not (start.isdigit() and end.isdigit()):
+                return None
+            low, high = int(start), int(end)
+            if low > high:
+                low, high = high, low
+            picks.extend(range(low, min(high, maximum) + 1))
+        elif chunk.isdigit():
+            picks.append(int(chunk))
+        else:
+            return None
+    return [index for index in dict.fromkeys(picks) if 1 <= index <= maximum]

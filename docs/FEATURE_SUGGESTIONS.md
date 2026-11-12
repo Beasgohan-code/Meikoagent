@@ -228,17 +228,19 @@ tests; none of them requires a new external service the sandbox cannot run.
 
 ---
 
-## Status note — `vc_player` (voice-chat player)
+## Status note — `music` (Playeon/Videl player + toolkit)
 
-The `music` package stayed a **toolkit** (index, ID3, covers) and the new
-`vc_player` package owns playback, modelled on Playeon/Videl:
+Playback lives **inside `music/`** (the separate `vc_player` package was folded
+in on request): `plugin.py` keeps the toolkit wiring and `player.py` carries the
+player as a mixin, so one installation, one `/` namespace and one state file.
+Modelled on `playeon/playeon` and `Beasgohan-code/Videl0`:
 
 | layer | file | what it does |
 | --- | --- | --- |
 | state | `queue.py` | `Track` / `QueueState` / `PlayerQueue`; loop count, queue loop, autoplay, prev, seek clamped to duration, 1-based `remove`/`move`, shuffle, 200-track cap, JSON round-trip |
 | sources | `sources.py` | `-f/-s/-sd/-hd/-fhd/-2k/-4k/-best` flags, YouTube/`youtu.be`/shorts ids, direct media by extension, layered resolution (reply → direct link → `music` catalogue → owner extractor endpoint) |
 | card | `player_card.py` | progress bar, state line, “up next”, queue pages, result picker; `pb:` / `q:` callback protocol |
-| commands | `plugin.py` | 35 commands: play/vplay/stream/fplay, pause/resume/skip/prev/end/stop, seek/fw/bw, loop/loopq/autoplay, queue/q/clear/remove/move/shuffle/pick, playing/np/nowplaying, style/mode/speed/volume, join/leave/room/vc |
+| commands | `player.py` + `plugin.py` | 53 commands: play/vplay/stream/fplay, pause/resume/skip/prev/end/stop, seek/fw/bw, loop/loopq/autoplay, queue/q/clear/remove/move/shuffle/pick, **playlist/savequeue/loadqueue/delqueue/chart**, playing/np/now/next/nowplaying, style/mode/**mode3d**/speed/volume, join/leave/room/vc, **auth**, plus the catalogue toolkit (music/tag/magic/cover/…) |
 
 **Honest limits.** Real voice-chat streaming needs `pytgcalls` *and* `ffmpeg`;
 neither ships here, so `vc_available()` reports false and the card is labelled
@@ -251,3 +253,28 @@ without any of that.
 (`vc_play`, `vc_pause`, `vc_skip`, `vc_join`, `vc_leave`, `party`, the six
 progress-bar glyphs) with unicode fallbacks, plus `play`/`pause`/`skip`/`stop`/
 `join`/`leave` aliases so existing copy decks pick them up unchanged.
+
+
+---
+
+## Status note — bot packs ported from upstream projects
+
+Five packages now carry the behaviour of the reference bots, re-implemented on
+aiogram (no pyrogram, no vendored download stack, no hidden globals):
+
+| package | modelled on | what was taken |
+| --- | --- | --- |
+| `music` | `playeon/playeon`, `Beasgohan-code/Videl0` | full playback surface, `pb:`/`q:` card protocol, quality + `site` flags, styles/3D, playlists, chart |
+| `encoder` | `abhinai2244/ENCODING-BOT` | x264/x265 + CRF/preset/tune, resolution/fps targets, subtitle copy/burn/extract, audio-track selection, watermarks, thumbnail, ffprobe info |
+| `filestore` | `abhinai2244/Multi-FileStoreBot` | multi-user vault: per-member quota, collections, visibility, TTL, and **signed `/start` share links** (HMAC over file+owner+expiry) |
+| `linkshare` | `abhinai2244/LINK-SHAREBOT` | protected links with a membership gate, join requests + admin approval, claim caps, per-user verify tokens |
+| `leech` | `abhinai2244/CBML` | mirror/leech task engine: flags, progress/ETA/speed, per-user + global concurrency, cancel, stats — with a pluggable backend |
+
+**What was deliberately not copied.** CBML's aria2/qBittorrent/SABnzbd/rclone
+plant, its mongo/pyrogram session layer and the pyarmor-obfuscated segments are
+not portable into this platform; instead each engine exposes a clean seam
+(`TransferBackend`, `_download`, `resolve_endpoint`) and reports honestly when
+the piece is absent. `save-restricted-content-bot`'s session-string route is not
+reproduced at all: accepting user session strings is a credential risk, so
+`/auth` explains that sessions belong in config, and `/save` keeps using the
+platform's copy path.

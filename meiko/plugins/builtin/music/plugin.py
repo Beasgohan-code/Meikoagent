@@ -28,25 +28,40 @@ from .library import (
     render_cover_text,
 )
 from .manifest import MANIFEST
+from .player import PLAYER_COMMAND_NAMES, PlayerMixin
+from .sources import PlaylistManager
 
 INDEX_KEY = "index:tracks"
 MB = 1024 * 1024
 USAGE = (
-    "<b>Music toolkit</b>\n"
-    "<code>/music &lt;query&gt;</code> – search the catalogue\n"
-    "<code>/addmusic</code> – reply to audio to index it\n"
-    "<code>/tag Artist - Title</code> – reply to audio to tag it\n"
-    "<code>/magic</code> – we do all the tagging work for you\n"
-    "<code>/cover</code> – reply to audio to (re)build cover art\n"
-    "<code>/musicstats</code> – catalogue size"
+    "<b>Music · VC player</b>\n"
+    "<code>/play &lt;song|link&gt; [-f]</code> – queue music\n"
+    "<code>/vplay &lt;name&gt; [-hd|-fhd|-4k]</code> – queue video (alias /stream)\n"
+    "<code>/pause /resume /skip /prev /end</code> – transport\n"
+    "<code>/seek 1:30 /fw /bw</code> – scrub\n"
+    "<code>/loop 3 /loopq /autoplay</code> – repeat\n"
+    "<code>/queue /now /next /chart</code> – what is playing\n"
+    "<code>/savequeue chill /loadqueue chill /playlist</code> – playlists\n"
+    "<code>/style bassboost /mode /speed 1.25 /volume 80 /3d 8d</code> – sound\n"
+    "<code>/join /leave /room /vc /auth</code> – voice chat\n"
+    "\n<b>Catalogue</b>\n"
+    "<code>/music &lt;query&gt;</code> · <code>/addmusic</code> · <code>/tag</code> · "
+    "<code>/magic</code> · <code>/cover</code> · <code>/musicstats</code>"
 )
 
+
+#: Toolkit commands handled here; everything else is the player's.
+TOOLKIT_COMMANDS = {
+    "music", "musicsearch", "addmusic", "tag", "magic", "cover",
+    "musicstats", "musictags", "delmusic",
+}
+PLAYER_ONLY = set(PLAYER_COMMAND_NAMES)
 
 #: Only dispatch commands this package declares – never the whole "/" space.
 OWN_COMMAND = OwnCommand(MANIFEST.commands)
 
 @plugin
-class MusicPlugin(MeikoPlugin):
+class MusicPlugin(PlayerMixin, MeikoPlugin):
     manifest: PluginManifest = MANIFEST
 
     def __init__(self) -> None:
@@ -67,12 +82,18 @@ class MusicPlugin(MeikoPlugin):
             max_file_bytes=int(self.config("max_file_mb", 20)) * MB,
             ttl_seconds=1800,
         )
+        # playback half of the package (queue, resolvers, cards, callbacks)
+        await self.start_player(ctx)
+        self._chart = await PlaylistManager(self.state).load()
         router = Router(name="plugin:music")
         router.message.register(self.on_audio, F.audio)
         router.message.register(self.on_command_message, F.text.startswith("/"), OWN_COMMAND)
+        self.register_player_routes(router)
         ctx.add_router(router)
 
     async def on_stop(self, ctx: PluginContext) -> None:
+        await self.stop_player()
+        self._chart = None
         self._workspace = None
 
     async def persist(self) -> None:
@@ -83,6 +104,11 @@ class MusicPlugin(MeikoPlugin):
 
     # -- routing ---------------------------------------------------------
     async def on_command_message(self, message_obj: Message, **_: object) -> None:
+        """Single entry point: toolkit commands first, then the player."""
+        command = (message_obj.text or "").split(" ")[0].split("@")[0].lower()
+        if command.startswith("/") and command[1:] in PLAYER_ONLY:
+            await self.on_player_command(message_obj)
+            return
         await self.on_command(message_obj)
 
     async def on_audio(self, message_obj: Message, **_: object) -> None:

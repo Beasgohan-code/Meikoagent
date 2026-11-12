@@ -237,6 +237,24 @@ CAPABILITIES = {
         "risk": "medium",
         "plugin": "file_store",
     },
+    "media_encode": {
+        "label": "Video encoding",
+        "description": "Spawn ffmpeg for re-encodes (CPU-heavy, sizes the encoder workspace).",
+        "risk": "high",
+        "plugin": "encoder",
+    },
+    "bulk_transfer": {
+        "label": "Bulk mirror/leech",
+        "description": "Download remote files with the leech engine and re-upload them.",
+        "risk": "high",
+        "plugin": "leech",
+    },
+    "public_sharing": {
+        "label": "Public sharing",
+        "description": "Allow signed share links (filestore) and protected link release (linkshare).",
+        "risk": "medium",
+        "plugin": "filestore",
+    },
 }
 
 

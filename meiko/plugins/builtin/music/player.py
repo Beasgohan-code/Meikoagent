@@ -1,4 +1,4 @@
-"""``vc_player`` handlers – the full voice-chat playback surface.
+"""``music``/player – the full voice-chat playback surface.
 
 Command map (Playeon parity)::
 
@@ -35,12 +35,10 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
 from meiko.plugins.support import OwnCommand
 from meiko.ui import Btn, esc, keyboard, message, user_mention
-
 from .manifest import MANIFEST
 from .player_card import (
     clock,
@@ -51,10 +49,12 @@ from .player_card import (
     results_card,
     results_keyboard,
     state_line,
+    track_line,
 )
 from .queue import MAX_QUEUE, PlayerQueue, Track
 from .sources import (
     MediaResolver,
+    Playlist,
     PlayRequest,
     missing_vc_requirements,
     parse_request,
@@ -63,12 +63,27 @@ from .sources import (
     vc_available,
 )
 
-OWN_COMMAND = OwnCommand(MANIFEST.commands)
-#: The ``music`` package owns the audio catalogue; the player reuses it read-only.
+#: Playback names this module answers (the toolkit names stay in ``plugin.py``).
+PLAYER_COMMAND_NAMES = [
+    "play", "vplay", "stream", "fplay", "pause", "resume", "skip", "prev",
+    "seek", "fw", "bw", "end", "stop", "loop", "loopq", "autoplay",
+    "queue", "q", "clear", "remove", "move", "shuffle", "pick", "playlist",
+    "savequeue", "loadqueue", "delqueue", "chart", "now", "next",
+    "playing", "nowplaying", "np", "style", "mode", "speed", "volume",
+    "join", "leave", "room", "vc", "vcinfo", "auth", "mode3d",
+]
+#: Only dispatch the player's own commands – never the whole ``/`` space.
+OWN_COMMAND = OwnCommand(PLAYER_COMMAND_NAMES)
+#: The ``music`` toolkit owns the audio catalogue; the player reuses it.
 MUSIC_INDEX_KEY = "index:tracks"
 STYLES = {"default", "nightcore", "vaporwave", "bassboost", "8d", "karaoke", "lofi"}
 MODES = {"audio", "video", "both"}
 TICK_SECONDS = 5.0
+
+
+def _is_admin(message_obj: Message) -> bool:
+    """Cheap check: private chats are always allowed, groups defer to /next only."""
+    return message_obj.chat.type == "private"
 
 
 def parse_seek(text: str) -> int | None:
@@ -93,8 +108,13 @@ def parse_seek(text: str) -> int | None:
     return sign * seconds
 
 
-@plugin
-class VCPlayerPlugin(MeikoPlugin):
+class PlayerMixin:
+    """Playback half of :class:`~.plugin.MusicPlugin`.
+
+    Kept as a mixin so the toolkit (catalogue, ID3, covers) and the player
+    share one installation, one ``/`` namespace and one durable state file.
+    """
+
     manifest: PluginManifest = MANIFEST
 
     def __init__(self) -> None:
@@ -104,8 +124,8 @@ class VCPlayerPlugin(MeikoPlugin):
         self._tick: asyncio.Task[None] | None = None
         self._last_card: dict[int, int] = {}
 
-    # -- lifecycle --------------------------------------------------------
-    async def on_start(self, ctx: PluginContext) -> None:
+    # -- lifecycle (called from MusicPlugin.on_start) ----------------------
+    async def start_player(self, ctx: PluginContext) -> None:
         catalogue = None
         if ctx.can("storage.read"):
             from meiko.plugins.builtin.music.library import MusicLibrary
@@ -123,12 +143,18 @@ class VCPlayerPlugin(MeikoPlugin):
             remote=remote,
             limit=int(self.config("max_results", 8)),
         )
-        router = Router(name="plugin:vc_player")
-        router.message.register(self.on_command, F.text.startswith("/"), OWN_COMMAND)
-        router.callback_query.register(self.on_callback, F.data.startswith("pb:") | F.data.startswith("q:"))
-        ctx.add_router(router)
 
-    async def on_stop(self, ctx: PluginContext) -> None:
+    def register_player_routes(self, router: Router) -> Router:
+        router.message.register(self.on_player_command, F.text.startswith("/"), OWN_COMMAND)
+        router.callback_query.register(self.on_callback, F.data.startswith("pb:") | F.data.startswith("q:"))
+        return router
+
+    @property
+    def chart(self) -> Any:
+        """Set by the plugin when ``sources`` are wired (see ``sources.PlaylistManager``)."""
+        return getattr(self, "_chart", None)
+
+    async def stop_player(self) -> None:
         if self._tick is not None:
             self._tick.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -162,7 +188,7 @@ class VCPlayerPlugin(MeikoPlugin):
             await self.state.set(f"room:{chat_id}", room)
 
     # -- dispatch ---------------------------------------------------------
-    async def on_command(self, message_obj: Message, **_: object) -> None:
+    async def on_player_command(self, message_obj: Message, **_: object) -> None:
         text = (message_obj.text or "").strip()
         raw_command, _, rest = text.partition(" ")
         command = raw_command.split("@")[0].lower()
@@ -203,10 +229,20 @@ class VCPlayerPlugin(MeikoPlugin):
             "/room": self.cmd_room,
             "/vc": self.cmd_vcinfo,
             "/vcinfo": self.cmd_vcinfo,
+            "/auth": self.cmd_auth,
+            "/mode3d": self.cmd_mode3d,
+            "/playlist": self.cmd_playlist,
+            "/savequeue": self.cmd_save_queue,
+            "/loadqueue": self.cmd_load_queue,
+            "/delqueue": self.cmd_del_queue,
+            "/chart": self.cmd_chart,
+            "/now": self.cmd_now,
+            "/next": self.cmd_next,
         }.get(command)
         if handler is None:
-            return
+            return False  # not ours – let MusicPlugin handle its own commands
         await handler(message_obj, argument)
+        return True
 
     # -- playback ---------------------------------------------------------
     async def cmd_play(self, message_obj: Message, argument: str, *, video: bool = False) -> None:
@@ -346,6 +382,10 @@ class VCPlayerPlugin(MeikoPlugin):
         return None
 
     async def _send_card(self, message_obj: Message, queue: PlayerQueue, track: Track) -> None:
+        manager = self.chart
+        if manager is not None and track is not None:
+            manager.record_play(track)
+            await manager.save()
         simulated = not vc_available()
         body = play_card(queue, requested_by=self._display(message_obj))
         if simulated:
@@ -734,6 +774,203 @@ class VCPlayerPlugin(MeikoPlugin):
                           else f"{self.config('default_quality', '1080')}p", "video")
         await message_obj.reply(builder.build())
 
+    # -- Playeon extras: auth, 3D mode, playlists, chart, now/next ---------
+    async def cmd_auth(self, message_obj: Message, argument: str = "") -> None:
+        """Playeon's ``/auth``: explain how sessions are authorised, never store one."""
+        token = (message_obj.text or "").split(" ", 1)[1].strip() if " " in (message_obj.text or "") else ""
+        if token:
+            # never echo a secret back into the chat
+            if self.context is not None:
+                await self.context.delete_state("auth:input")
+            await message_obj.reply(
+                message("Auth", "key")
+                .line("Send session strings in a private chat, not a group.", raw=True)
+                .line("Nothing was stored — the bot does not accept credentials by message.", raw=True)
+                .build()
+            )
+            return
+        room = await self.load_room(message_obj.chat.id)
+        await message_obj.reply(
+            message("Auth", "key")
+            .key_value("Room", str(message_obj.chat.id), "message")
+            .key_value("Backend", "live" if vc_available() else "simulation", "server")
+            .key_value("Session", "not required" if not vc_available() else "verified", "lock")
+            .key_value("Requested by", str(room.get("requested_by") or "—"), "user")
+            .line("Owner sessions live in the platform config, not in chat.", raw=True)
+            .build()
+        )
+
+    async def cmd_mode3d(self, message_obj: Message, argument: str = "") -> None:
+        """Playeon's ``/3d``: an audio-spatialisation preset for the next track."""
+        chat_id = message_obj.chat.id
+        raw = (argument or "").strip().lower()
+        modes = {"off", "3d", "8d", "wide", "binaural"}
+        async with self.lock(chat_id):
+            queue = await self.load_queue(chat_id)
+            current = queue.state.current
+            if raw not in modes:
+                active = (current.extra.get("spatial") if current else "") or "off"
+                await message_obj.reply(
+                    message("3D audio", "orb")
+                    .key_value("Active", active, "orb")
+                    .line(" · ".join(sorted(modes)), raw=True)
+                    .line("Use <code>/3d 8d</code> before <code>/play</code>.", raw=True)
+                    .build()
+                )
+                return
+            if current is not None:
+                current.extra["spatial"] = raw
+                await self.save_queue(chat_id, queue)
+        await message_obj.reply(
+            message("3D audio · " + raw, "orb")
+            .line("Applied to the current track’s filter chain." if raw != "off" else "Spatial effect disabled.", raw=True)
+            .build())
+        # ``/mode3d`` is the documented alias of ``/3d``
+        if message_obj.text and message_obj.text.lower().startswith("/mode3d"):
+            return
+
+    async def cmd_playlist(self, message_obj: Message, argument: str = "") -> None:
+        manager = self.chart
+        if manager is None:
+            await self._send_error(message_obj, "Playlists unavailable", "Storage is not enabled for this scope.")
+            return
+        action, _, name = (argument or "").strip().partition(" ")
+        action = action.lower()
+        name = name.strip() or action if action not in {"list", "save", "load", "del"} else name.strip()
+        if action in ("", "list"):
+            names = manager.names()
+            builder = message("Playlists", "folder")
+            if not names:
+                builder.line("No playlists yet — <code>/savequeue &lt;name&gt;</code>.", raw=True)
+            for entry in names:
+                playlist = manager.playlists[entry]
+                builder.line(
+                    f"<code>{esc(entry)}</code> · {len(playlist.tracks)} track(s)", raw=True
+                )
+            await message_obj.reply(builder.build())
+            return
+        if action == "save":
+            await self.cmd_save_queue(message_obj, name)
+            return
+        if action in ("load", "play"):
+            await self.cmd_load_queue(message_obj, name)
+            return
+        if action in ("del", "delete", "remove"):
+            await self.cmd_del_queue(message_obj, name)
+            return
+        # ``/playlist <name>`` loads it
+        await self.cmd_load_queue(message_obj, argument.strip())
+
+    async def cmd_save_queue(self, message_obj: Message, argument: str = "") -> None:
+        manager = self.chart
+        name = (argument or "").strip().lower()
+        if manager is None:
+            await self._send_error(message_obj, "Playlists unavailable", "Storage is not enabled for this scope.")
+            return
+        if not name:
+            await self._send_error(message_obj, "Usage", "/savequeue chill")
+            return
+        chat_id = message_obj.chat.id
+        queue = await self.load_queue(chat_id)
+        tracks = ([queue.current] if queue.current else []) + list(queue.state.items)
+        if not tracks:
+            await self._send_error(message_obj, "Nothing to save", "Queue something first.")
+            return
+        playlist = manager.put(
+            Playlist(
+                name=name,
+                tracks=tracks,
+                owner_id=message_obj.from_user.id if message_obj.from_user else 0,
+                created_at=int(asyncio.get_event_loop().time()),
+            )
+        )
+        await manager.save()
+        await message_obj.reply(
+            message("Playlist saved", "check")
+            .key_value("Name", playlist.name, "folder")
+            .key_value("Tracks", str(len(playlist.tracks)), "music")
+            .build()
+        )
+
+    async def cmd_load_queue(self, message_obj: Message, argument: str = "") -> None:
+        manager = self.chart
+        name = (argument or "").strip().lower()
+        if manager is None:
+            await self._send_error(message_obj, "Playlists unavailable")
+            return
+        playlist = manager.get(name)
+        if playlist is None or not playlist.tracks:
+            await self._send_error(message_obj, "No such playlist", "/playlist to list them.")
+            return
+        chat_id = message_obj.chat.id
+        async with self.lock(chat_id):
+            queue = await self.load_queue(chat_id)
+            if queue.current is None:
+                queue.start(playlist.tracks[0])
+                rest = playlist.tracks[1:]
+            else:
+                rest = playlist.tracks
+            for track in rest:
+                if queue.enqueue(track) == 0:
+                    break
+            await self.save_queue(chat_id, queue)
+        await message_obj.reply(
+            message("Playlist loaded", "folder")
+            .key_value("Name", playlist.name, "folder")
+            .key_value("Queued", str(len(playlist.tracks)), "queue")
+            .build(),
+            reply_markup=player_keyboard(queue),
+        )
+
+    async def cmd_del_queue(self, message_obj: Message, argument: str = "") -> None:
+        manager = self.chart
+        if manager is None:
+            await self._send_error(message_obj, "Playlists unavailable")
+            return
+        name = (argument or "").strip().lower()
+        if not manager.delete(name):
+            await self._send_error(message_obj, "No such playlist")
+            return
+        await manager.save()
+        await message_obj.reply(message("Playlist deleted", "trash").line(f"<code>{esc(name)}</code>", raw=True).build())
+
+    async def cmd_chart(self, message_obj: Message, argument: str = "") -> None:
+        """Most-played tracks in this scope (a real chart, not a fake one)."""
+        manager = self.chart
+        chat_id = message_obj.chat.id
+        queue = await self.load_queue(chat_id)
+        universe = ([queue.current] if queue.current else []) + list(queue.state.history) + list(queue.state.items)
+        tracks = manager.chart_tracks(universe) if manager is not None else []
+        builder = message("Chart", "graph")
+        if not tracks:
+            builder.line("No plays recorded yet — play something first.", raw=True)
+        for index, track in enumerate(tracks[:10], start=1):
+            plays = track.extra.get("plays", 0)
+            builder.line(f"<b>{index}.</b> <code>{esc(track.label)}</code> · {plays} play(s)", raw=True)
+        await message_obj.reply(builder.build(), reply_markup=queue_keyboard(queue))
+
+    async def cmd_now(self, message_obj: Message, argument: str = "") -> None:
+        await self.cmd_playing(message_obj, argument)
+
+    async def cmd_next(self, message_obj: Message, argument: str = "") -> None:
+        chat_id = message_obj.chat.id
+        queue = await self.load_queue(chat_id)
+        upcoming = queue.upcoming(5)
+        builder = message("Up next", "queue")
+        if not upcoming:
+            builder.line("Nothing queued.", raw=True)
+        for index, track in enumerate(upcoming, start=1):
+            builder.line(track_line(track, index), raw=True)
+        if message_obj.reply_to_message is not None and _is_admin(message_obj):
+            # ``/next`` as a reply moves the replied track to the front
+            track = self._track_from_reply(message_obj)
+            if track is not None:
+                async with self.lock(chat_id):
+                    queue.enqueue(track, play_next=True)
+                    await self.save_queue(chat_id, queue)
+                builder.line(f"<i>{esc(track.label)} moved to the front.</i>", raw=True)
+        await message_obj.reply(builder.build(), reply_markup=queue_keyboard(queue))
+
     # -- callbacks --------------------------------------------------------
     async def on_callback(self, call: CallbackQuery) -> None:
         data = call.data or ""
@@ -923,7 +1160,7 @@ class _Catalogue:
     """Adapter from ``music.MusicLibrary`` to the resolver's search protocol."""
 
     def __init__(self, ctx: PluginContext, library: Any) -> None:
-        self.ctx = ctx
+        self.ctx_ref = ctx  # named so it does not shadow PlayerMixin.ctx
         self.library = library
         self.catalogue = True  # marker used by autoplay pool discovery
 
@@ -931,7 +1168,7 @@ class _Catalogue:
         from .sources import CatalogueBackend
 
         backend = CatalogueBackend(self.library)
-        ctx = self.ctx
+        ctx = self.ctx_ref
         hits = await backend.search(query, limit)
         for track in hits:
             track.source = track.source or track.title
@@ -942,4 +1179,4 @@ class _Catalogue:
         return hits
 
 
-__all__ = ["OWN_COMMAND", "VCPlayerPlugin", "parse_seek"]
+__all__ = ["OWN_COMMAND", "PLAYER_COMMAND_NAMES", "PlayerMixin", "parse_seek"]
