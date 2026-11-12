@@ -23,6 +23,7 @@ from meiko.api.routers import (
     developer,
     groups,
     infrastructure,
+    modules,
     owner,
     plugins,
     templates,
@@ -119,6 +120,7 @@ def create_app() -> FastAPI:
         activity,
         developer,
         infrastructure,
+        modules,
         owner,
         templates,
     ):

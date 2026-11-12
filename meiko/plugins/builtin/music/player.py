@@ -123,6 +123,8 @@ class PlayerMixin:
         self._locks: dict[int, asyncio.Lock] = {}
         self._tick: asyncio.Task[None] | None = None
         self._last_card: dict[int, int] = {}
+        self._sessions: Any = None
+        self._mirror = True
 
     # -- lifecycle (called from MusicPlugin.on_start) ----------------------
     async def start_player(self, ctx: PluginContext) -> None:
@@ -178,6 +180,10 @@ class PlayerMixin:
     async def save_queue(self, chat_id: int, queue: PlayerQueue) -> None:
         if self.context is not None:
             await self.state.set(f"queue:{chat_id}", queue.to_dict())
+        # one mirror for the dashboard: every mutation (command, callback or
+        # webapp action) lands here, so the Music Studio is never stale
+        if getattr(self, "_mirror", True):
+            await self.publish_room(chat_id, queue)
 
     async def load_room(self, chat_id: int) -> dict[str, Any]:
         data = await self.state.get(f"room:{chat_id}", None) if self.context else None
@@ -186,6 +192,92 @@ class PlayerMixin:
     async def save_room(self, chat_id: int, room: dict[str, Any]) -> None:
         if self.context is not None:
             await self.state.set(f"room:{chat_id}", room)
+
+    # -- webapp transport -------------------------------------------------
+    def _session_store(self) -> Any:
+        cached = getattr(self, "_sessions", None)
+        if cached is None:
+            from meiko.modules.music import MusicSessions
+            from meiko.modules.store import get_module_store
+
+            cached = MusicSessions(get_module_store())
+            self._sessions = cached
+        return cached
+
+    def _bot_id(self) -> int:
+        return int(getattr(self.context, "bot_id", 0) or 0)
+
+    async def publish_room(self, chat_id: int, queue: PlayerQueue, *, room: dict[str, Any] | None = None) -> None:
+        """Mirror the live queue into the shared store so the webapp sees the truth."""
+        snapshot = queue.to_dict()
+        if room is not None:
+            snapshot["room"] = room
+        try:
+            self._session_store().publish_room(self._bot_id(), chat_id, snapshot)
+        except Exception:  # pragma: no cover - the mirror must never break playback
+            pass
+
+    async def apply_transport(
+        self,
+        *,
+        bot_id: int,
+        chat_id: int,
+        action: str,
+        value: Any = None,
+        actor_id: int = 0,
+    ) -> dict[str, Any]:
+        """Drive the bot's own queue from the dashboard (same state, same controls)."""
+        async with self.lock(chat_id):
+            queue = await self.load_queue(chat_id)
+            if action in {"pause", "resume", "skip", "previous", "stop", "seek", "volume", "shuffle", "loop"}:
+                if queue.current is None and action not in {"stop"}:
+                    return {"reason": "nothing is playing in that room"}
+            if action == "pause":
+                queue.pause()
+            elif action == "resume":
+                queue.resume()
+            elif action == "skip":
+                queue.next()
+            elif action == "previous":
+                queue.previous()
+            elif action == "stop":
+                queue.clear()
+                room = await self.load_room(chat_id)
+                room["stopped_by"] = actor_id
+                await self.save_room(chat_id, room)
+            elif action == "seek":
+                queue.seek(int(value or 0))
+            elif action == "volume":
+                queue.set_volume(int(value or 100))
+            elif action == "shuffle":
+                queue.shuffle()
+            elif action == "loop":
+                queue.set_loop(int(value or 0))
+            elif action == "play":
+                return await self._remote_play(chat_id, str(value or ""), actor_id)
+            await self.save_queue(chat_id, queue)
+        await self.publish_room(chat_id, queue)
+        return {"state": queue.to_dict(), "action": action}
+
+    async def _remote_play(self, chat_id: int, query: str, actor_id: int) -> dict[str, Any]:
+        if not query:
+            return {"reason": "no query supplied"}
+        resolver = self._resolver
+        if resolver is None:
+            return {"reason": "the player is not initialised yet"}
+        request = parse_request(query)
+        outcome = await resolver.resolve(request, requested_by=str(actor_id or ""))
+        tracks = [track for track in (getattr(outcome, "tracks", None) or []) if track]
+        if not tracks:
+            return {"reason": "nothing matched that query"}
+        async with self.lock(chat_id):
+            queue = await self.load_queue(chat_id)
+            queue.enqueue(tracks[0])
+            if queue.current is None:
+                queue.start(tracks[0])
+            await self.save_queue(chat_id, queue)
+        await self.publish_room(chat_id, queue)
+        return {"queued": tracks[0].label, "state": queue.to_dict()}
 
     # -- dispatch ---------------------------------------------------------
     async def on_player_command(self, message_obj: Message, **_: object) -> None:

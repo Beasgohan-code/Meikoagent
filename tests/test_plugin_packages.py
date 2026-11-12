@@ -631,8 +631,16 @@ class TestCapabilities:
         response = await app_client.get("/api/v1/owner/capabilities", headers=auth_headers(token))
         assert response.status_code == 200
         rows = {row["capability"]: row for row in response.json()}
-        assert set(rows) == {"code_exec", "remote_fetch", "file_upload"}
+        assert set(rows) == {
+            "code_exec",
+            "remote_fetch",
+            "file_upload",
+            "media_encode",
+            "bulk_transfer",
+            "public_sharing",
+        }
         assert rows["code_exec"]["enabled"] is False
+        assert rows["media_encode"]["enabled"] is False
 
     async def test_owner_can_open_and_narrow_a_capability(self, app_client) -> None:
         from tests.test_api import auth_headers
