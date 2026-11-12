@@ -27,6 +27,17 @@ MANIFEST = PluginManifest(
             "default": "local",
             "label": "Transfer backend",
         },
+        "ytdl_proxy": {
+            "type": "string",
+            "default": "",
+            "label": "Proxy for yt-dlp (http://host:port); empty = direct",
+        },
+        "ytdl_cookies": {
+            "type": "string",
+            "default": "",
+            "secret": True,
+            "label": "Path to a cookies.txt for yt-dlp (absolute; never fetched or logged)",
+        },
         "daemon_secret": {
             "type": "string",
             "default": "",

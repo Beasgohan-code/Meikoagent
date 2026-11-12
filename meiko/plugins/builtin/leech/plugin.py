@@ -21,6 +21,7 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
+from meiko.modules import toolchain
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
@@ -209,6 +210,9 @@ class LeechPlugin(MeikoPlugin):
             flags,
             endpoint=str(self.config("daemon_endpoint", "")),
             secret=str(self.config("daemon_secret", "")),
+            proxy=str(self.config("ytdl_proxy", "")),
+            cookies=str(self.config("ytdl_cookies", "")),
+            binary=toolchain.path_of("ffmpeg"),
         )
         if chosen is not manager.backend:
             manager.backend = chosen

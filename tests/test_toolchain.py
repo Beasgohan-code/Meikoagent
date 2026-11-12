@@ -652,3 +652,36 @@ class TestDaemonRpc:
 
         backend = DaemonBackend("qbittorrent", "http://127.0.0.1:8080")
         assert backend.name == "qbittorrent"
+
+
+class TestYtDlpOptions:
+    """Proxy/cookies/format come from config and never leak into messages."""
+
+    def _options(self, monkeypatch, **kwargs) -> dict:
+        _FakeYdl.calls.clear()
+        monkeypatch.setattr(YtDlpBackend, "module", staticmethod(lambda: _FakeModule))
+        import asyncio
+
+        asyncio.run(YtDlpBackend(**kwargs).fetch("https://youtu.be/a", "/tmp/o.mp4"))
+        return _FakeYdl.calls[-1]
+
+    def test_proxy_is_normalised(self, monkeypatch, tmp_path):
+        options = self._options(monkeypatch, proxy="127.0.0.1:1080")
+        assert options["proxy"] == "http://127.0.0.1:1080"
+
+    def test_cookies_are_only_used_when_the_file_exists(self, monkeypatch, tmp_path):
+        missing = tmp_path / "nope.txt"
+        assert "cookiefile" not in self._options(monkeypatch, cookies=str(missing))
+        jar = tmp_path / "cookies.txt"
+        jar.write_text("# Netscape HTTP Cookie File\n")
+        assert self._options(monkeypatch, cookies=str(jar))["cookiefile"] == str(jar)
+
+    def test_audio_only_asks_for_audio(self, monkeypatch):
+        assert self._options(monkeypatch, audio_only=True)["format"].startswith("bestaudio")
+        assert "bestvideo" in self._options(monkeypatch, audio_only=False)["format"]
+
+    def test_the_ffmpeg_location_is_the_resolved_binary(self, monkeypatch):
+        binary = toolchain.path_of("ffmpeg")
+        options = self._options(monkeypatch, binary=binary)
+        if binary:
+            assert options["ffmpeg_location"] == binary

@@ -121,9 +121,20 @@ class YtDlpBackend:
 
     name = "ytdl"
 
-    def __init__(self, *, max_bytes: int = 2000 * 1024 * 1024, binary: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        max_bytes: int = 2000 * 1024 * 1024,
+        binary: str = "",
+        proxy: str = "",
+        cookies: str = "",
+        audio_only: bool = False,
+    ) -> None:
         self.max_bytes = max_bytes
         self.binary = binary
+        self.proxy = proxy.strip()
+        self.cookies = cookies.strip()
+        self.audio_only = audio_only
 
     @staticmethod
     def module():
@@ -152,7 +163,13 @@ class YtDlpBackend:
             # the callback is async; schedule it without blocking the extractor
             asyncio.get_event_loop().create_task(on_progress(done, total))
 
+        fmt = (
+            "bestaudio[ext=m4a]/bestaudio/best"
+            if self.audio_only
+            else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        )
         options: dict[str, Any] = {
+            "format": fmt,
             "outtmpl": destination,
             "quiet": True,
             "no_warnings": True,
@@ -164,6 +181,12 @@ class YtDlpBackend:
         }
         if self.binary:
             options["ffmpeg_location"] = self.binary
+        if self.proxy:
+            options["proxy"] = self.proxy if "://" in self.proxy else f"http://{self.proxy}"
+        if self.cookies and os.path.isfile(self.cookies):
+            # a cookie jar is a credential: honoured when the owner points at one,
+            # never fetched, copied or included in an error message
+            options["cookiefile"] = self.cookies
 
         def download() -> str:
             with module.YoutubeDL(options) as ydl:
@@ -528,7 +551,13 @@ def magnet_available() -> bool:
 
 
 def pick_backend(
-    flags: set[str] | None = None, *, endpoint: str = "", binary: str = "", secret: str = ""
+    flags: set[str] | None = None,
+    *,
+    endpoint: str = "",
+    binary: str = "",
+    secret: str = "",
+    proxy: str = "",
+    cookies: str = "",
 ) -> TransferBackend:
     """Resolve the backend a flag asks for, or explain why it cannot be used.
 
@@ -541,7 +570,7 @@ def pick_backend(
     from meiko.modules.toolchain import path_of
 
     if "ytdl" in flags:
-        return YtDlpBackend(binary=path_of("ffmpeg"))
+        return YtDlpBackend(binary=binary or path_of("ffmpeg"), proxy=proxy, cookies=cookies)
     if "aria2" in flags:
         return DaemonBackend("aria2", endpoint, secret=secret)
     if "qbit" in flags:

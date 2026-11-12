@@ -387,7 +387,7 @@ the dashboard can never claim a capability the encoder does not have.
 | encoder gate | required both binaries | requires `ffmpeg`; `probe_fallback` reports the missing half, `/encinfo` and the Studio say which mode they are in |
 | music search | catalogue + owner relay only | adds `YtDlpBackend` (yt-dlp) as the **last** layer, so an operator's relay still wins; searches and extraction run in a worker thread |
 | page links (`/play <youtube url>`) | queued as an opaque URL with no stream | extracted to a real `stream_url` before queueing, with the direct track kept if extraction fails |
-| leech | local copy / HTTP only | `-ytdl` selects yt-dlp for this task; `-aria2/-qbit/-rclone` fail closed with the reason |
+| leech | local copy / HTTP only | `-ytdl` selects yt-dlp for this task (format, proxy and an owner-pointed `cookies.txt` honoured, never fetched or logged); `-aria2` drives its JSON-RPC; `-qbit/-rclone` fail closed with the reason |
 | `/musictags`, `/tag` | MP3 (ID3v2) only | MP3 stays in-tree; M4A/MP4/FLAC/OGG/Opus go through `mutagen` when installed, and an unsupported container is named instead of mangled |
 
 Every one of those behaves identically when the optional packages are absent:
