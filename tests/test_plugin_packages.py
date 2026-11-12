@@ -45,6 +45,7 @@ NEW_SLUGS = {
     "keep_alive",
     "file_store",
     "code_runner",
+    "vc_player",
 }
 
 

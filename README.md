@@ -250,6 +250,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
 | `tests/test_plugin_packages.py` | package layout, saver links/captions, renamer engine, ID3 writer, post templates, heartbeat, sandbox, toggles + capabilities, command publication, durable state |
 | `tests/test_plugin_routing.py` | real `Dispatcher` + real `Update`s: every package answers only its own commands |
+| `tests/test_vc_player.py` | `vc_player`: queue state machine (loop/loopq/prev/autoplay/clamp), link + flag parsing, layered search, play card, and real `Dispatcher` runs over every command **and** the `pb:`/`q:` control buttons |
 | `tests/test_saver_pipeline.py` | end-to-end `/save` run: copy, batch, dedupe, progress edits, oversized ranges |
 | `tests/test_workflows.py` | **Workflows A–I** end-to-end acceptance |
 | `tests/test_startup.py` | `start.py` argument contract, schema ownership, Compose contract |

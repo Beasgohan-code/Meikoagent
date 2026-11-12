@@ -26,6 +26,7 @@ from meiko.plugins.builtin import (  # noqa: F401
     saver,
     security,
     utilities,
+    vc_player,
     welcome,
 )
 from meiko.plugins.manifest import PluginManifest
@@ -48,6 +49,7 @@ BUILTIN_MANIFESTS: list[PluginManifest] = [
     saver.MANIFEST,
     renamer.MANIFEST,
     music.MANIFEST,
+    vc_player.MANIFEST,
     # platform
     ai.MANIFEST,
     integrations.MANIFEST,

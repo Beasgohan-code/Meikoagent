@@ -91,6 +91,24 @@ PREMIUM_EMOJI: dict[str, tuple[str, str]] = {
     "palette": ("5319136744473552991", "🎨"),
     "refresh": ("5368808590600748258", "🔄"),
     "plus": ("5416117059207572332", "➕"),
+    # Playeon voice-chat pack (playeon-bot/src/lib/emoji.ts)
+    "vc_play": ("6102404441711846300", "▶️"),
+    "vc_pause": ("6100268816468550688", "⏸️"),
+    "vc_skip": ("6102411025896711978", "⏭️"),
+    "vc_join": ("6102535751746987490", "📥"),
+    "vc_leave": ("6102690190181016523", "📤"),
+    "vc_cancel": ("6102650478913396554", "⏹️"),
+    "vc_play_text": ("6102860691792732091", "▶"),
+    "vc_pause_text": ("6102427617355376015", "⏸"),
+    "vc_skip_text": ("6102600519853810919", "⏭"),
+    "vc_end_text": ("6102688455014228420", "⏹"),
+    "party": ("5863985154933919695", "🎉"),
+    "bar_outline_l": ("6105063657828262298", "▱"),
+    "bar_outline_c": ("6105010335809281820", "▱"),
+    "bar_outline_r": ("6102488640250717623", "▱"),
+    "bar_fill_l": ("6105053002014401160", "▰"),
+    "bar_fill_c": ("6102387519540699716", "▰"),
+    "bar_fill_r": ("6102753558128501546", "▰"),
 }
 
 #: Semantic aliases so copy decks can stay stable while ids evolve.
@@ -133,6 +151,15 @@ ALIASES: dict[str, str] = {
     "caption": "message",
     "post": "message",
     "storage": "folder",
+    "play": "vc_play",
+    "pause": "vc_pause",
+    "skip": "vc_skip",
+    "stop": "vc_cancel",
+    "cancel": "vc_cancel",
+    "join": "vc_join",
+    "leave": "vc_leave",
+    "playing": "music",
+    "stream": "video",
 }
 
 

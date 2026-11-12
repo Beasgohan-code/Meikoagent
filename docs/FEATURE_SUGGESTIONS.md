@@ -225,3 +225,29 @@ the heartbeat plugin a monitoring tool rather than a necessity.
 
 Each item above is written so it can become a pull request of its own with its own
 tests; none of them requires a new external service the sandbox cannot run.
+
+---
+
+## Status note — `vc_player` (voice-chat player)
+
+The `music` package stayed a **toolkit** (index, ID3, covers) and the new
+`vc_player` package owns playback, modelled on Playeon/Videl:
+
+| layer | file | what it does |
+| --- | --- | --- |
+| state | `queue.py` | `Track` / `QueueState` / `PlayerQueue`; loop count, queue loop, autoplay, prev, seek clamped to duration, 1-based `remove`/`move`, shuffle, 200-track cap, JSON round-trip |
+| sources | `sources.py` | `-f/-s/-sd/-hd/-fhd/-2k/-4k/-best` flags, YouTube/`youtu.be`/shorts ids, direct media by extension, layered resolution (reply → direct link → `music` catalogue → owner extractor endpoint) |
+| card | `player_card.py` | progress bar, state line, “up next”, queue pages, result picker; `pb:` / `q:` callback protocol |
+| commands | `plugin.py` | 35 commands: play/vplay/stream/fplay, pause/resume/skip/prev/end/stop, seek/fw/bw, loop/loopq/autoplay, queue/q/clear/remove/move/shuffle/pick, playing/np/nowplaying, style/mode/speed/volume, join/leave/room/vc |
+
+**Honest limits.** Real voice-chat streaming needs `pytgcalls` *and* `ffmpeg`;
+neither ships here, so `vc_available()` reports false and the card is labelled
+`simulation` instead of claiming to be in the call. Search uses the local
+`music` catalogue, or an owner-configured `resolve_endpoint` (a yt-dlp/relay
+service) when `http.outbound` is granted. Direct links and replied files play
+without any of that.
+
+**Premium emoji.** `meiko/ui/emoji.py` gained the Playeon document ids
+(`vc_play`, `vc_pause`, `vc_skip`, `vc_join`, `vc_leave`, `party`, the six
+progress-bar glyphs) with unicode fallbacks, plus `play`/`pause`/`skip`/`stop`/
+`join`/`leave` aliases so existing copy decks pick them up unchanged.
