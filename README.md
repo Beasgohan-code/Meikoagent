@@ -240,7 +240,7 @@ Bot API 10.4 widgets are handled by a typed adapter, and `allowed_updates` inclu
 
 ## API
 
-Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 120 documented paths,
+Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 121 documented paths,
 including the media-module surface (`/music`, `/encoder`, `/saver`, `/filestore`, `/linkshare`, `/leech`,
 `/platform`) — see `docs/MODULES.md` §7.
 
