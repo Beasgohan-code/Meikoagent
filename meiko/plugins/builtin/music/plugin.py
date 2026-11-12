@@ -179,6 +179,9 @@ class MusicPlugin(MeikoPlugin):
             .key_value("Artists", str(stats["artists"]), "user")
             .key_value("Albums", str(stats["albums"]), "folder")
             .key_value("Volume", human_size(int(stats["bytes"])), "database")
+            .blank()
+            .line("Want to hear it in voice chat? Enable <b>VC Player</b> and use "
+                  "<code>/play &lt;song&gt;</code>.", raw=True)
             .build()
         )
 
