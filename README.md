@@ -20,7 +20,7 @@ plane, the plugin manager is the extension system and the database is the single
 | --- | --- | --- |
 | Bot engine | `meiko/core`, `meiko/telegram` | aiogram dispatcher, routers, middleware, permissions, command registry, polling **and** webhook, single consumer per token, graceful shutdown |
 | Moderation | `meiko/moderation` | anti-spam detectors, escalation, `EVENT → CONDITION → ACTION → AUDIT` rule engine, action executor with guardrails |
-| Plugins | `meiko/plugins` | typed manifests, lifecycle states, scope resolution (`group → bot → global`), tenant-isolated execution, 11 built-in plugins |
+| Plugins | `meiko/plugins` | typed manifests, lifecycle states, scope resolution (`group → bot → global`), tenant-isolated execution, 18 built-in plugin **packages** |
 | Runtime | `meiko/runtime` | worker manager (capacity, heartbeats, crash-loop protection, recovery), scheduler (cron + retries), watchdog (dead-runtime detection) |
 | API | `meiko/api` | FastAPI v1 control plane, bearer sessions + API keys, owner-scoped tenancy, SSE activity stream |
 | Data | `meiko/db`, `migrations` | SQLAlchemy 2 async models (29 tables), Alembic migrations, PostgreSQL primary / SQLite fallback |
@@ -248,6 +248,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
+| `tests/test_plugin_packages.py` | package layout, saver links/captions, renamer engine, ID3 writer, post templates, heartbeat, sandbox, toggles + capabilities |
 | `tests/test_workflows.py` | **Workflows A–I** end-to-end acceptance |
 | `tests/test_startup.py` | `start.py` argument contract, schema ownership, Compose contract |
 
@@ -312,3 +313,27 @@ Everything is environment driven — see `.env.example`. Key settings:
 
 Provided as-is for the MEIKO AGENT platform. Premium emoji identifiers are catalogued from
 `Beasgohan-code/Videl0`; rich-message semantics reference `Richgram`, `Wzgram` and `WZML-X`.
+
+### Builtin plugins
+
+Every plugin is a **package**, not a single file: a typed `manifest.py`, one or more
+pure logic modules, and a thin `plugin.py` with the aiogram handlers. Logic that
+matters (link parsing, rename templating, ID3 writing, post validation, watchdog
+state machine, sandbox limits) is importable and unit-tested without a bot, a token
+or a database.
+
+| Package | What it does |
+| --- | --- |
+| `file_store/` | quota-aware vault (`/save`, `/get`, `/files`, `/del`, `/storestats`) |
+| `saver/` | post archiving from public/private channels: `t.me/c/…`, ranges `100-120`, lists, forum topics, caption templates, word delete/replace rules, thumbnails, dedupe, dump chat |
+| `renamer/` | template engine (`{title} {season:02d} {episode:02d} {quality} …`), release-tag cleaning, previews, re-upload as document/video/audio |
+| `music/` | local catalogue with fuzzy search, dependency-free ID3v2 read/write and generated cover art |
+| `post_maker/` | HTML post templates with entity validation, URL button rows, scheduled queue (`+10m`) |
+| `keep_alive/` | self-ping, latency stats, failure-streak alerts to the owner, recovery notice |
+| `code_runner/` | sandboxed python/node/bash execution, **owner-gated** by a capability |
+
+Switches: `GET /plugins/toggles` + `POST /plugins/{slug}/toggle?enabled=` (the webapp
+**Plugins → On / Off** tab) install-if-needed and flip state in one click. Dangerous
+capabilities (`code_exec`, `remote_fetch`, `file_upload`) live behind
+`/owner/capabilities` and are enforced inside the runtime, not just in the API.
+
