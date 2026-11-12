@@ -14,12 +14,13 @@ treated as missing, and every store scope is derived from a bot id you own.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import time
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from meiko.api.deps import CurrentAuth, SessionDep, error
@@ -197,6 +198,47 @@ async def music_live(websocket: WebSocket) -> None:
         pass
     finally:
         hub.unsubscribe(subscription)
+
+
+@router.get("/music/stream")
+async def music_stream(request: Request, auth: CurrentAuth, session: SessionDep) -> Any:
+    """Server-Sent Events mirror of the WebSocket feed.
+
+    Native clients use the WebSocket; browsers behind a proxy that cannot
+    upgrade (the Next.js route handler cannot) use this stream instead. Both are
+    fed by the same event hub, so the payloads are identical.
+    """
+    from fastapi.responses import StreamingResponse
+
+    owned = sorted(await _owned_bot_ids(session, auth))
+    if not owned:
+        raise error(404, "not_found", "no bots to follow")
+
+    async def generate() -> Any:
+        hub = get_event_hub()
+        subscription = hub.subscribe({"music"})
+        yield "retry: 4000\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(subscription.queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                bot_id = int(event.scope.split(":", 1)[1]) if event.scope.startswith("bot:") else 0
+                if bot_id and bot_id not in owned:
+                    continue
+                yield f"event: {event.topic}\ndata: {json.dumps(event.to_dict())}\n\n"
+        finally:
+            hub.unsubscribe(subscription)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 # ----------------------------------------------------------------- encoder

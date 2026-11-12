@@ -391,3 +391,14 @@ class TestEffectivePlugins:
             await client.get("/api/v1/plugins/effective", headers=headers(stranger_token))
         ).json()
         assert body["bots"] == {}
+
+
+class TestMusicStream:
+    async def test_sse_stream_requires_auth(self, client):
+        response = await client.get("/api/v1/music/stream")
+        assert response.status_code in (401, 403)
+
+    async def test_sse_stream_requires_a_bot(self, client):
+        token, _ = await login(client, 930)
+        response = await client.get("/api/v1/music/stream", headers=headers(token))
+        assert response.status_code == 404
