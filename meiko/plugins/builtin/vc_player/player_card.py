@@ -36,13 +36,33 @@ def clock(seconds: int | float | None) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def progress_bar(position: int, duration: int, width: int = BAR_WIDTH) -> str:
-    """``▰▰▰▱▱▱▱▱▱▱▱▱`` for the current position (empty bar when unknown)."""
-    if duration <= 0 or width <= 0:
-        return EMPTY * max(0, width)
-    ratio = min(1.0, max(0.0, position / duration))
-    filled = int(round(ratio * width))
-    return FILLED * filled + EMPTY * (width - filled)
+def progress_bar(position: int, duration: int, width: int = BAR_WIDTH, *, premium: bool = True) -> str:
+    """The SeekBar: ``▰▰▰▱▱▱▱▱▱▱▱▱`` (or the Playeon premium cap/centre glyphs).
+
+    Premium bars are built exactly like Playeon's: a left cap, a repeated centre
+    and a right cap, each in a filled and an outline variant, so the bar keeps
+    its rounded ends at every width.  ``premium=False`` gives the plain glyphs
+    that any client renders.
+    """
+    width = max(0, width)
+    if duration <= 0:
+        filled = 0
+    else:
+        filled = int(round(min(1.0, max(0.0, position / duration)) * width))
+    if not premium:
+        return FILLED * filled + EMPTY * (width - filled)
+
+    def glyph(index: int) -> str:
+        is_filled = index < filled
+        if index == 0:
+            name = "bar_fill_l" if is_filled else "bar_outline_l"
+        elif index == width - 1 and width > 1:
+            name = "bar_fill_r" if is_filled else "bar_outline_r"
+        else:
+            name = "bar_fill_c" if is_filled else "bar_outline_c"
+        return get_emoji(name).html
+
+    return "".join(glyph(index) for index in range(width))
 
 
 def state_line(queue: PlayerQueue) -> str:
@@ -56,13 +76,15 @@ def state_line(queue: PlayerQueue) -> str:
     total = clock(current.duration) if current.duration else "live"
     flags = []
     if state.loop_count:
-        flags.append(f"🔁 ×{state.loop_count}")
+        flags.append(f"{get_emoji('refresh').html} ×{state.loop_count}")
     if state.loop_queue:
-        flags.append("🔁 queue")
+        flags.append(f"{get_emoji('refresh').html} queue")
     if state.autoplay:
-        flags.append("✨ autoplay")
+        flags.append(f"{get_emoji('spark').html} autoplay")
     if state.volume != 100:
-        flags.append(f"🔊 {state.volume}%")
+        flags.append(f"{get_emoji('unmute').html} {state.volume}%")
+    if state.mode == "video":
+        flags.append(get_emoji("video").html)
     suffix = "  " + " · ".join(flags) if flags else ""
     return f"{icon} <b>{elapsed}</b> / {total}{suffix}"
 

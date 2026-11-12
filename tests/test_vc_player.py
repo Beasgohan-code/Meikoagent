@@ -369,11 +369,19 @@ class TestCards:
         assert clock(-9) == "0:00"
 
     def test_progress_bar_edges(self) -> None:
-        assert progress_bar(0, 100, 10) == "▱" * 10
-        assert progress_bar(100, 100, 10) == "▰" * 10
-        assert progress_bar(50, 100, 10) == "▰" * 5 + "▱" * 5
-        assert progress_bar(5, 0, 10) == "▱" * 10
-        assert progress_bar(999, 100, 10) == "▰" * 10
+        plain = {"premium": False}
+        assert progress_bar(0, 100, 10, **plain) == "▱" * 10
+        assert progress_bar(100, 100, 10, **plain) == "▰" * 10
+        assert progress_bar(50, 100, 10, **plain) == "▰" * 5 + "▱" * 5
+        assert progress_bar(5, 0, 10, **plain) == "▱" * 10
+        assert progress_bar(999, 100, 10, **plain) == "▰" * 10
+
+    def test_progress_bar_is_built_from_premium_glyphs(self) -> None:
+        bar = progress_bar(50, 100, 6)
+        assert bar.count("<tg-emoji") == 6
+        # Playeon caps: outline-left … fill-right style ends, never a lone glyph
+        assert "6105063657828262298" in progress_bar(0, 100, 6)  # outline left cap
+        assert "6102753558128501546" in progress_bar(100, 100, 6)  # fill right cap
 
     def test_card_contains_title_progress_and_requester(self) -> None:
         queue = PlayerQueue()
@@ -410,6 +418,7 @@ class TestCards:
         queue.set_volume(40)
         line = state_line(queue)
         assert "×3" in line and "autoplay" in line and "40%" in line
+        assert line.count("<tg-emoji") >= 3  # every flag is a premium icon
 
     def test_player_keyboard_has_the_control_protocol(self) -> None:
         queue = PlayerQueue()
