@@ -399,10 +399,14 @@ class SaverPlugin(MeikoPlugin):
         await self.save_index()
 
     async def safe_edit(self, status: Message, text: str) -> None:
-        try:
-            await status.edit_text(text)
-        except Exception:  # pragma: no cover - flood/telegram edge cases
-            pass
+        """Update the progress message; never fail the run because of it.
+
+        Uses the explicit Bot API call: aiogram does not mount a bot on the
+        Message returned by ``send_message``/``reply``, so ``status.edit_text``
+        would raise ``RuntimeError``.  Failures are logged, not swallowed – a
+        missing progress line is how a broken flush path hides for weeks.
+        """
+        await self.edit_text(status, text)
 
     async def save_one(self, target: LinkTarget, message_id: int) -> str:
         ctx = self.context

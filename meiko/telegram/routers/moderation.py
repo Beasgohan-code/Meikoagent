@@ -407,7 +407,7 @@ async def cmd_purge(
         import asyncio
 
         await asyncio.sleep(4)
-        await confirmation.delete()
+        await confirmation.bot.delete_message(confirmation.chat.id, confirmation.message_id)
     except Exception:
         pass
 

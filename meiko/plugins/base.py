@@ -86,6 +86,25 @@ class MeikoPlugin:
             self._state_store = PluginState(self.context)
         return self._state_store
 
+    async def edit_text(self, sent: Any, text: str, **kwargs: Any) -> bool:
+        """Edit a message that was sent through ``ctx.bot`` (returns success).
+
+        aiogram does not mount a bot on the objects returned by
+        ``send_message``/``reply``, so ``sent.edit_text(...)`` raises
+        ``RuntimeError`` outside a middleware context.  Always edit through the
+        explicit Bot API call instead – this helper keeps that in one place.
+        """
+        if self.context is None:
+            return False
+        try:
+            await self.context.bot.edit_message_text(
+                chat_id=sent.chat.id, message_id=sent.message_id, text=text, **kwargs
+            )
+            return True
+        except Exception as exc:  # pragma: no cover - telegram/flood edge cases
+            self.context.log("debug", f"{self.manifest.slug}: edit skipped ({exc})")
+            return False
+
     def config(self, key: str, default: Any = None) -> Any:
         if self.context is None:
             return default

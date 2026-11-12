@@ -88,11 +88,12 @@ class KeepAlivePlugin(MeikoPlugin):
             sent = await ctx.bot.send_message(message_obj.chat.id, "🏓")
             latency = int((time.perf_counter() - started) * 1000)
             self._tracker.record(latency, True)
-            await sent.edit_text(
+            await self.edit_text(
+                sent,
                 message("Pong", "wifi")
                 .key_value("Latency", f"{latency} ms", "clock")
                 .key_value("Uptime", format_duration(self._tracker.state.uptime.total_seconds()), "clock")
-                .build()
+                .build(),
             )
         except Exception as exc:  # pragma: no cover - network failures
             self._tracker.record(0, False, str(exc))

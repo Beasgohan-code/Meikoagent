@@ -33,8 +33,8 @@ class UtilitiesPlugin(MeikoPlugin):
             started = time.perf_counter()
             sent = await ctx.bot.send_message(message_obj.chat.id, message("Pong", "spark").build())
             latency = (time.perf_counter() - started) * 1000
-            await sent.edit_text(
-                message("Pong", "spark").key_value("Latency", f"{latency:.0f} ms").build()
+            await self.edit_text(
+                sent, message("Pong", "spark").key_value("Latency", f"{latency:.0f} ms").build()
             )
         elif text.startswith("/id") and message_obj.from_user:
             builder = (
