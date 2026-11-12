@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from meiko.plugins.builtin.encoder.plans import (
@@ -131,9 +133,18 @@ class TestParsing:
 
 
 def test_tool_detection_is_honest():
+    """``tools_available`` is strict, but a half-installed toolchain still probes.
+
+    The bundled ``imageio-ffmpeg`` wheel ships ``ffmpeg`` without ``ffprobe``,
+    so "ffmpeg present, ffprobe missing" is a real state and must not be
+    reported as a broken install.
+    """
     assert isinstance(tools_available(), bool)
     if not tools_available():
-        assert missing_tools() and ffmpeg_path() == ""
+        assert missing_tools()
+        for name in missing_tools():
+            resolve = getattr(sys.modules["meiko.modules.toolchain"], "path_of")
+            assert resolve(name) == ""
 
 
 # ---------------------------------------------------------------- dispatch
@@ -228,9 +239,11 @@ class TestDispatch:
         assert replies and "Reply to a file" in replies[0]
 
     async def test_encode_plans_when_ffmpeg_is_missing(self, wired) -> None:
+        """With no ffmpeg the bot explains and prints the command instead of failing."""
+        from meiko.modules import toolchain
         from tests.telegram_harness import attach as attach_video
 
-        if tools_available():  # pragma: no cover - depends on the host
+        if toolchain.has("ffmpeg"):  # pragma: no cover - depends on the host
             pytest.skip("ffmpeg is installed; the planning path is not used")
         bot, dispatcher, recorder = wired
         recorder.sent.clear()

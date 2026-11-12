@@ -34,8 +34,10 @@ from .tasks import (
     LocalBackend,
     TaskManager,
     TaskState,
+    YtDlpBackend,
     guess_kind,
     parse_flags,
+    pick_backend,
 )
 
 OWN_COMMAND = OwnCommand(MANIFEST.commands)
@@ -187,6 +189,11 @@ class LeechPlugin(MeikoPlugin):
                 reply_markup=keyboard([[Btn("Cancel", callback_data=f"lc:cancel:{updated.id}", emoji="cross", style="danger")]]),
             )
 
+        # A flag such as ``-ytdl``/``-aria2`` selects the backend for *this* task;
+        # without one the configured default is used.
+        chosen = pick_backend(flags, endpoint=str(self.config("daemon_endpoint", "")))
+        if chosen is not manager.backend:
+            manager.backend = chosen
         job = asyncio.ensure_future(
             manager.run(task, destination, on_update=on_update, interval=float(self.config("progress_interval", 4.0)))
         )
@@ -273,12 +280,16 @@ class LeechPlugin(MeikoPlugin):
         builder = message("Transfer backend", "server" if ready else "warn")
         builder.key_value("Backend", backend.name, "server")
         builder.key_value("Reachable", "yes" if ready else "no", "check" if ready else "cross")
+        ytdl = YtDlpBackend()
+        builder.key_value("yt-dlp", "installed" if ytdl.available() else "not installed", "check" if ytdl.available() else "cross")
         if not ready:
             builder.line(
                 "<i>Local copies and http(s) downloads work without a daemon. "
                 "Set <code>daemon_endpoint</code> when aria2/qBittorrent/rclone RC is running.</i>",
                 raw=True,
             )
+        if not ytdl.available():
+            builder.line("<i><code>pip install yt-dlp</code> adds site extraction (YouTube and others).</i>", raw=True)
         await message_obj.reply(builder.build())
 
     # -- dashboard integration ---------------------------------------------

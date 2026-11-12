@@ -189,3 +189,101 @@ __all__ = [
     "strip_existing",
     "write_tag",
 ]
+
+
+# --------------------------------------------------------------------- mutagen
+#: mutagen reads/writes far more than MP3. It is used *instead of* the in-tree
+#: writer for those formats only, so the dependency-free MP3 path stays the
+#: default and a missing package degrades to "MP3 only" instead of failing.
+MUTAGEN_FORMATS = {".m4a": "MP4", ".mp4": "MP4", ".flac": "FLAC", ".ogg": "OggVorbis", ".opus": "OggOpus"}
+
+
+def mutagen_available() -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("mutagen") is not None
+    except (ImportError, ValueError):  # pragma: no cover
+        return False
+
+
+def supported_format(filename: str) -> str:
+    """``mp3`` (in-tree writer), ``mutagen``, or ``unsupported``."""
+    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if suffix == ".mp3":
+        return "mp3"
+    if suffix in MUTAGEN_FORMATS and mutagen_available():
+        return "mutagen"
+    return "unsupported"
+
+
+def _tag_values(tags: TrackTags) -> dict[str, str]:
+    values = {
+        "title": tags.title,
+        "artist": tags.artist,
+        "album": tags.album,
+        "genre": tags.genre,
+        "date": tags.year,
+        "tracknumber": tags.track,
+    }
+    return {key: value for key, value in values.items() if value}
+
+
+def write_tag_file(path: str, tags: TrackTags, artwork: bytes | None = None) -> TagResult:  # pragma: no cover
+    """Write tags into a real file with mutagen (MP4/FLAC/OGG/Opus)."""
+    from mutagen import File as MutagenFile  # type: ignore[import-not-found]
+    from mutagen.flac import Picture  # type: ignore[import-not-found]
+    from mutagen.id3 import PictureType  # type: ignore[import-not-found]
+
+    audio = MutagenFile(path, easy=True)
+    if audio is None:
+        raise ValueError("mutagen does not recognise this container")
+    if audio.tags is None:
+        audio.add_tags()
+    for key, value in _tag_values(tags).items():
+        audio[key] = [value]
+    audio.save()
+    applied = False
+    if artwork:
+        full = MutagenFile(path)
+        if hasattr(full, "add_picture") and hasattr(full, "clear_pictures"):  # FLAC
+            full.clear_pictures()
+            picture = Picture()
+            picture.type = int(PictureType.COVER_FRONT)
+            picture.mime = guess_mime(artwork)
+            picture.data = artwork
+            full.add_picture(picture)
+            full.save()
+            applied = True
+        elif "covr" in (full.tags or {}) or hasattr(full, "tags"):  # MP4
+            from mutagen.mp4 import MP4Cover  # type: ignore[import-not-found]
+
+            full["covr"] = [MP4Cover(artwork, imageformat=MP4Cover.FORMAT_PNG)]
+            full.save()
+            applied = True
+    return TagResult(tags=tags, artwork_applied=applied, stripped_bytes=0)
+
+
+def read_tag_file(path: str) -> TrackTags:  # pragma: no cover
+    """Read tags from a real file with mutagen, in the in-tree shape."""
+    from mutagen import File as MutagenFile  # type: ignore[import-not-found]
+
+    audio = MutagenFile(path, easy=True)
+    if audio is None:
+        return TrackTags()
+
+    def first(key: str) -> str:
+        value = (audio.tags or {}).get(key) or []
+        return str(value[0]) if value else ""
+
+    return TrackTags(
+        title=first("title"),
+        artist=first("artist"),
+        album=first("album"),
+        genre=first("genre"),
+        year=first("date"),
+        track=first("tracknumber"),
+    )
+
+
+__all__ = [name for name in dir() if not name.startswith("_")]

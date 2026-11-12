@@ -446,6 +446,15 @@ class TransferEngine:
         return await uploader.upload(file_path, destination, progress)  # type: ignore[arg-type]
 
 
+def magnet_available() -> bool:
+    """BitTorrent is honest only when a daemon hook or a client library exists."""
+    try:
+        from meiko.plugins.builtin.leech.tasks import magnet_available as _check
+    except Exception:  # pragma: no cover - plugin package not importable
+        return False
+    return bool(_check())
+
+
 __all__ = [
     "CloudUploader",
     "Downloader",
@@ -458,4 +467,5 @@ __all__ = [
     "TransferError",
     "TransferResult",
     "Uploader",
+    "magnet_available",
 ]

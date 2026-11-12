@@ -140,9 +140,16 @@ class PlayerMixin:
             from .sources import RemoteBackend
 
             remote = RemoteBackend(endpoint, str(self.config("resolve_token", "")))
+        extractor = None
+        if bool(self.config("use_ytdlp", True)):
+            from .sources import YtDlpBackend
+
+            candidate = YtDlpBackend(max_results=int(self.config("max_results", 8)))
+            extractor = candidate if candidate.available() else None
         self._resolver = MediaResolver(
             catalogue=catalogue,
             remote=remote,
+            extractor=extractor,
             limit=int(self.config("max_results", 8)),
         )
 

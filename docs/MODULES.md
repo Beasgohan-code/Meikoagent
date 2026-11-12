@@ -220,6 +220,19 @@ notices stay with the installed package.
 
 ---
 
+### 4.1 Media toolchain (optional, resolved at runtime)
+
+| requirement | why it is optional | what happens without it |
+| --- | --- | --- |
+| `ffmpeg` (system or `imageio-ffmpeg` wheel) | encoding is the only feature that truly needs it | `/encode` prints the exact command and refuses to start; telemetry says `ffmpeg: false` |
+| `ffprobe` | ships with system ffmpeg, **absent** from the wheel | metadata falls back to the banner; the Studio shows a "metadata from banner" note instead of a red error |
+| `yt-dlp` | unpinned extractors break; operators may prefer their own relay | search falls back to catalogue → relay; `/leech -ytdl` fails with the install hint |
+| `mutagen` | pure-Python, only for non-MP3 containers | `/tag` on an M4A says which package to install; MP3 keeps the in-tree writer |
+
+The `imageio-ffmpeg` wheel is deliberately in `requirements.txt`: it makes
+"clone and run" produce real encodes on a machine with no system packages, which
+is the difference between a CI test and a toy.
+
 ## 5. Licensing
 
 | upstream | licence | what Meiko may do |
@@ -317,15 +330,39 @@ every change.
 
 * **Real voice-chat streaming** needs `pytgcalls` + a signalling path; neither is
   installed. The player reports `simulation` and the queue/controls are real.
-* **`yt_dlp` search/extraction** is not installed; resolution is direct-link,
-  local catalogue, or an owner-configured relay endpoint.
+  Everything up to the call (queue, transport, resolution, mirror) is live.
 * **daemon transfers** (aria2/qBittorrent/rclone) report `available() == False`
-  until a daemon/remote is configured.
+  until a daemon/remote is configured. A `-aria2` job **fails with the reason**
+  rather than silently downgrading to an HTTP copy.
 * **MTProto features** (WZgram) require the dependency plus an owner session.
-* **ffmpeg** is absent in this sandbox; the encoder degrades to validated plans.
-  The same code path runs for real wherever ffmpeg exists.
+* **Only `ffmpeg` ships in the bundled wheel** (`imageio-ffmpeg`). Metadata then
+  comes from the `ffmpeg -i` banner — same dict shape, no ffprobe — and the
+  encoder panel says so. Exporting from YouTube needs an egress-allowed host
+  (the sandbox blocks it); the code path is exercised against a stub in
+  `tests/test_toolchain.py`.
 * **Payments/subscriptions** from the saver upstream were not ported.
 * **Postgres-specific behaviour** is untested here (SQLite in the sandbox).
+
+### 10.1 What became real
+
+Closing the gaps that used to be listed here changed three modules. The media
+binaries now come from **one resolver**, `meiko/modules/toolchain.py`, consulted
+by the encoder runner, the player's voice-chat check, telemetry and the API — so
+the dashboard can never claim a capability the encoder does not have.
+
+| layer | before | now |
+| --- | --- | --- |
+| `shutil.which("ffmpeg")` in 3 places | could disagree; a bundled binary was invisible | `toolchain.resolve()`: `PATH` → `MEIKO_FFMPEG_BIN`/`MEIKO_FFPROBE_BIN` → `imageio-ffmpeg` wheel, each answer records its `source` |
+| probes | refused to run without `ffprobe` | `toolchain.probe()` uses ffprobe when present, else parses the `ffmpeg -i` banner into the identical JSON shape (`parse_banner`, pure and tested) |
+| encoder gate | required both binaries | requires `ffmpeg`; `probe_fallback` reports the missing half, `/encinfo` and the Studio say which mode they are in |
+| music search | catalogue + owner relay only | adds `YtDlpBackend` (yt-dlp) as the **last** layer, so an operator's relay still wins; searches and extraction run in a worker thread |
+| page links (`/play <youtube url>`) | queued as an opaque URL with no stream | extracted to a real `stream_url` before queueing, with the direct track kept if extraction fails |
+| leech | local copy / HTTP only | `-ytdl` selects yt-dlp for this task; `-aria2/-qbit/-rclone` fail closed with the reason |
+| `/musictags`, `/tag` | MP3 (ID3v2) only | MP3 stays in-tree; M4A/MP4/FLAC/OGG/Opus go through `mutagen` when installed, and an unsupported container is named instead of mangled |
+
+Every one of those behaves identically when the optional packages are absent:
+the layer reports itself unavailable, the reason names the install step, and no
+test asserts a capability that the host might not have.
 
 ---
 
@@ -337,6 +374,7 @@ every change.
 | `tests/test_modules_services.py` | tokens, FileStore tenancy, Linkshare lifecycle, Leech adapters, Music sessions/transport |
 | `tests/test_api_modules.py` | every module route, tenancy, saver mirror, effective plugin state, SSE auth |
 | `tests/test_modules_contract.py` | manifests, disabled-module inertness, route coverage, page/nav coverage, honesty, tenant isolation |
+| `tests/test_toolchain.py` | binary resolution order, banner parsing, a real encode/probe, yt-dlp plumbing (stubbed), daemon flags failing closed, mutagen round-trips, telemetry/encoder agreement |
 | `tests/test_webapp_transport.py` | a dashboard action (pause/skip/stop/remote play) drives the *real* started plugin and the bot's own queue; room isolation |
 | `tests/test_music_player.py`, `test_encoder.py`, `test_filestore.py`, `test_linkshare_leech.py`, `test_saver_pipeline.py` | per-module behaviour through the Telegram harness |
 

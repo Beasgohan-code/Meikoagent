@@ -50,6 +50,11 @@ MANIFEST = PluginManifest(
     resources={"cpu": "low", "memory": "low", "network": "medium"},
     config_schema={
         # --- playback ---------------------------------------------------
+        "use_ytdlp": {
+            "type": "bool",
+            "default": True,
+            "label": "Extract with yt-dlp when it is installed (searches and page links)",
+        },
         "resolve_endpoint": {
             "type": "string",
             "default": "",

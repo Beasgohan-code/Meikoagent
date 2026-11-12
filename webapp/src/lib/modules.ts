@@ -292,8 +292,18 @@ export const music = {
 
 export const encoder = {
   jobs: (botId: number) => api.get<EncoderJobs>(`/encoder/jobs?bot_id=${botId}`),
-  presets: () => api.get<{ codecs: string[]; presets: string[]; containers: string[]; resolutions: string[]; tools: { available: boolean; missing: string[] } }>("/encoder/presets"),
-  profile: (botId: number) => api.get<{ profile: Partial<EncoderProfile>; tools: { available: boolean; missing: string[] } }>(`/encoder/profile?bot_id=${botId}`),
+  presets: () =>
+    api.get<{
+      codecs: string[];
+      presets: string[];
+      containers: string[];
+      resolutions: string[];
+      tools: { available: boolean; missing: string[]; ffmpeg?: boolean; ffprobe?: boolean; sources?: Record<string, string>; probe_fallback?: boolean };
+    }>("/encoder/presets"),
+  profile: (botId: number) =>
+    api.get<{ profile: Partial<EncoderProfile>; tools: { available: boolean; missing: string[]; ffmpeg?: boolean; ffprobe?: boolean; sources?: Record<string, string>; probe_fallback?: boolean } }>(
+      `/encoder/profile?bot_id=${botId}`,
+    ),
   saveProfile: (botId: number, profile: EncoderProfile) =>
     api.patch<{ saved: boolean; profile: EncoderProfile }>(`/encoder/profile?bot_id=${botId}`, profile),
   cancel: (botId: number, jobId: string) =>

@@ -7,11 +7,11 @@ handling is the only thing that needs a real binary.
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+from meiko.modules import toolchain
 
 from .plans import EncodeSettings, build_command, duration_of, parse_progress
 
@@ -21,46 +21,35 @@ class FFmpegMissing(RuntimeError):
 
 
 def ffmpeg_path() -> str:
-    return shutil.which("ffmpeg") or ""
+    """Resolved through the shared toolchain (PATH → env override → wheel)."""
+    return toolchain.path_of("ffmpeg")
 
 
 def ffprobe_path() -> str:
-    return shutil.which("ffprobe") or ""
+    return toolchain.path_of("ffprobe")
 
 
 def tools_available() -> bool:
-    return bool(ffmpeg_path() and ffprobe_path())
+    """Both binaries present.
+
+    ``ffprobe`` is part of the same upstream package as ``ffmpeg``; the bundled
+    wheel ships only ``ffmpeg``, so this stays strict and
+    :func:`probe` transparently falls back to parsing the ffmpeg banner.
+    """
+    return toolchain.complete()
 
 
 def missing_tools() -> list[str]:
-    return [name for name, path in (("ffmpeg", ffmpeg_path()), ("ffprobe", ffprobe_path())) if not path]
+    return toolchain.missing()
 
 
 async def probe(path: str | Path, *, timeout: float = 30.0) -> dict[str, Any]:
-    """``ffprobe -show_format -show_streams`` as JSON."""
-    binary = ffprobe_path()
-    if not binary:
-        raise FFmpegMissing("ffprobe is not installed")
-    process = await asyncio.create_subprocess_exec(
-        binary,
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_format",
-        "-show_streams",
-        str(path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout)
-    except asyncio.TimeoutError:  # pragma: no cover - hung probe
-        process.kill()
-        raise
-    if process.returncode != 0:
-        raise RuntimeError(f"ffprobe failed with code {process.returncode}")
-    return json.loads(stdout.decode(errors="replace") or "{}")
+    """``ffprobe -show_format -show_streams`` as JSON.
+
+    When ``ffprobe`` is absent but ``ffmpeg`` is present, the banner is parsed
+    instead (same dict shape) — see :mod:`meiko.modules.toolchain`.
+    """
+    return await toolchain.probe(path, timeout=timeout)
 
 
 @dataclass

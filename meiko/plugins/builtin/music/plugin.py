@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, FSInputFile, Message
@@ -19,7 +20,15 @@ from meiko.plugins.support import (
 )
 from meiko.ui import Btn, esc, keyboard, message
 
-from .id3 import TrackTags, is_audio, read_tags, write_tag
+from .id3 import (
+    TrackTags,
+    is_audio,
+    read_tags,
+    read_tag_file,
+    supported_format,
+    write_tag,
+    write_tag_file,
+)
 from .library import (
     LibraryEntry,
     MusicLibrary,
@@ -32,6 +41,12 @@ from .player import PLAYER_COMMAND_NAMES, PlayerMixin
 from .sources import PlaylistManager
 
 INDEX_KEY = "index:tracks"
+
+
+def _looks_like_id3(head: bytes) -> bool:
+    """``ID3`` magic — an MP3 that merely happens to live in an .m4a name."""
+    return head[:3] == b"ID3"
+
 MB = 1024 * 1024
 USAGE = (
     "<b>Music · VC player</b>\n"
@@ -235,7 +250,13 @@ class MusicPlugin(PlayerMixin, MeikoPlugin):
         except Exception as exc:  # pragma: no cover - telegram failures
             await message_obj.reply(f"Download failed: {esc(str(exc))}")
             return
-        tags = read_tags(head)
+        filename = getattr(document, "file_name", "") or "track.mp3"
+        if supported_format(filename) == "mutagen" and not _looks_like_id3(head):
+            # MP4/FLAC/OGG carry their own tag structures; the in-tree ID3 reader
+            # cannot parse those, so a whole-file read through mutagen is used.
+            tags = await self._read_tags_via_mutagen(document, filename) or read_tags(head)
+        else:
+            tags = read_tags(head)
         if tags.empty:
             tags = guess_tags_from_filename(getattr(document, "file_name", "") or "")
         builder = message("Tags", "type")
@@ -244,6 +265,28 @@ class MusicPlugin(PlayerMixin, MeikoPlugin):
         if not tags.summary_rows():
             builder.line("No embedded tags – guessed nothing from the filename.", raw=True)
         await message_obj.reply(builder.build())
+
+    async def _read_tags_via_mutagen(self, document: object, filename: str) -> TrackTags:
+        """Read a non-MP3 container's tags; returns empty tags on any failure.
+
+        The download is staged in the workspace and removed again, so a failed
+        read never leaves a stray file behind.
+        """
+        ctx = self.context
+        workspace = self._workspace
+        if ctx is None or workspace is None:
+            return TrackTags()
+        staged = None
+        try:
+            buffer = await ctx.bot.download(document, destination=None)
+            data = buffer.read() if hasattr(buffer, "read") else b""
+            staged = workspace.write_bytes(safe_filename(filename), data)
+            return read_tag_file(str(staged.path))
+        except Exception:  # unreadable container, missing mutagen, disk error
+            return TrackTags()
+        finally:
+            if staged is not None:
+                workspace.remove(staged.name)
 
     # -- tagging ---------------------------------------------------------
     async def cmd_tag(self, message_obj: Message, argument: str) -> None:
@@ -291,8 +334,24 @@ class MusicPlugin(PlayerMixin, MeikoPlugin):
         try:
             buffer = await ctx.bot.download(document, destination=None)
             data = buffer.read() if hasattr(buffer, "read") else b""
-            tagged, result = write_tag(data, tags, cover)
-            stored = workspace.write_bytes(safe_filename(filename), tagged)
+            fmt = supported_format(filename)
+            if fmt == "unsupported":
+                await message_obj.reply(
+                    f"<b>Unsupported format</b>: <code>{esc(filename.rsplit('.', 1)[-1])}</code>. "
+                    "MP3 is written in-tree; M4A/MP4/FLAC/OGG/Opus need <code>mutagen</code> "
+                    "(<code>pip install mutagen</code>)."
+                )
+                return
+            if fmt == "mutagen":
+                # mutagen edits the file in place, so write the download out first
+                staged = workspace.write_bytes(safe_filename(filename), data)
+                write_tag_file(str(staged.path), tags, cover)
+                tagged = Path(staged.path).read_bytes()
+                stored = staged
+                result = type("_Result", (), {"tags": tags, "artwork_applied": bool(cover)})()
+            else:
+                tagged, result = write_tag(data, tags, cover)
+                stored = workspace.write_bytes(safe_filename(filename), tagged)
         except Exception as exc:  # pragma: no cover - download/disk failures
             await message_obj.reply(f"<b>Tagging failed</b>: {esc(str(exc))}")
             return

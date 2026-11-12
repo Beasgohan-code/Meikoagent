@@ -166,9 +166,10 @@ Six modules sit on one shared infrastructure layer instead of inventing their ow
   refuse to show controls (`GET /api/v1/plugins/effective` resolves global → group → bot precedence).
 - **Real-time player sync:** WebSocket (`/api/v1/music/live`) with an SSE fallback
   (`/api/v1/music/stream`) for proxies that cannot upgrade; both read the same event hub.
-- **Honest degradation:** missing ffmpeg yields a validated plan, not a fake encode; unconfigured
-  transfer adapters report `available() == false`; link analytics say exactly what Telegram can and
-  cannot report.
+- **Honest degradation:** one resolver (`meiko/modules/toolchain.py`) answers "is ffmpeg here?" for
+  the encoder, the player, telemetry and the API; without it a validated plan is printed rather than a
+  fake encode. Unconfigured transfer adapters report `available() == false`; link analytics say exactly
+  what Telegram can and cannot report.
 - Full audit of the six reference repositories, licences, refusals and gaps: **[docs/MODULES.md](docs/MODULES.md)**.
 
 ### Runtime model
@@ -265,7 +266,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 647 tests
+python -m pytest -q          # 688 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -347,8 +348,10 @@ Everything is environment driven — see `.env.example`. Key settings:
   explicitly in the UI).
 - Voice-chat streaming still needs `pytgcalls` plus a signalling path; without it the player says
   `simulation` while the queue and controls remain real.
-- `yt_dlp`, aria2, qBittorrent and rclone are not installed; the transfer engine reports those adapters
-  as unavailable instead of failing later.
+- aria2, qBittorrent and rclone are not installed; the transfer engine reports those adapters as
+  unavailable instead of failing later. `yt-dlp` **is** wired (music search, page-link extraction,
+  `/leech -ytdl`) and the bundled `imageio-ffmpeg` wheel gives real encodes on a host with no system
+  ffmpeg. Without `ffprobe`, metadata is read from the ffmpeg banner and the Studio says so.
 - MTProto (WZgram/Pyrogram) is an optional adapter, never the primary framework, and never a way to
   reach content the bot itself cannot read.
 

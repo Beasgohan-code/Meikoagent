@@ -11,7 +11,11 @@ resolution happens in layers, in this order:
    (:class:`meiko.plugins.builtin.music.MusicLibrary`),
 3. **remote search** – an optional owner-configured extractor endpoint
    (``resolve_endpoint``, requires ``http.outbound``), which is what a real
-   deployment points at its own yt-dlp/relay service,
+   deployment points at its own relay service, and
+3b. **local extraction** – :class:`YtDlpBackend`, used when the ``yt-dlp``
+   package is importable. It is searched *last* so an operator's own relay wins,
+   and it never runs inside the event loop (search and extraction happen in a
+   worker thread).
 4. **voice-chat delivery** – requires an MTProto client (pyrogram/pytgcalls) and
    ``ffmpeg``; :func:`vc_available` reports the truth instead of pretending.
 
@@ -248,6 +252,130 @@ class RemoteBackend:
         return tracks[:limit]
 
 
+class YtDlpBackend:
+    """Search and resolve through ``yt-dlp`` when it is installed.
+
+    ``yt-dlp`` is an optional dependency: the plugin must behave identically
+    (minus this layer) when it is absent, so every entry point checks
+    :meth:`available` and the failure carries the install hint.
+    """
+
+    name = "yt-dlp"
+
+    def __init__(self, *, max_results: int = 8, timeout: float = 20.0) -> None:
+        self.max_results = max_results
+        self.timeout = timeout
+
+    @staticmethod
+    def module():
+        import importlib
+
+        try:
+            return importlib.import_module("yt_dlp")
+        except Exception:  # optional dependency
+            return None
+
+    def available(self) -> bool:
+        return self.module() is not None
+
+    async def search(self, query: str, limit: int) -> list[Track]:
+        module = self.module()
+        if module is None:
+            raise RuntimeError("yt-dlp is not installed (pip install yt-dlp)")
+        import asyncio
+
+        wanted = max(1, min(int(limit or self.max_results), 25))
+
+        def run() -> list[Track]:
+            options = {
+                "quiet": True,
+                "no_warnings": True,
+                "noprogress": True,
+                "skip_download": True,
+                "extract_flat": "in_playlist",
+                "noplaylist": True,
+                "socket_timeout": self.timeout,
+            }
+            with module.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(f"ytsearch{wanted}:{query}", download=False) or {}
+            tracks: list[Track] = []
+            for entry in (info.get("entries") or [])[:wanted]:
+                if not isinstance(entry, dict):
+                    continue
+                identifier = str(entry.get("id") or "")
+                url = str(entry.get("webpage_url") or entry.get("url") or "")
+                if not identifier and not url:
+                    continue
+                tracks.append(
+                    Track(
+                        title=str(entry.get("title") or identifier or url),
+                        source=url,
+                        url=url,
+                        kind="audio",
+                        duration=int(entry.get("duration") or 0),
+                        uploader=str(entry.get("uploader") or entry.get("channel") or ""),
+                        thumbnail=str(entry.get("thumbnail") or ""),
+                        video_id=identifier,
+                    )
+                )
+            return tracks
+
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(run)
+
+    async def resolve(self, url: str, *, video: bool = False, height: int = 0) -> Track | None:
+        """A playable track (with a short-lived ``stream_url``) for one page URL."""
+        module = self.module()
+        if module is None:
+            return None
+        import asyncio
+
+        def run() -> Track | None:
+            options = {
+                "quiet": True,
+                "no_warnings": True,
+                "noprogress": True,
+                "skip_download": True,
+                "format": (
+                    f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}]"
+                    if video and height
+                    else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+                    if video
+                    else "bestaudio[ext=m4a]/bestaudio/best"
+                ),
+            }
+            with module.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=False) or {}
+            stream = str(info.get("url") or "")
+            if not stream:
+                for fmt in info.get("formats") or []:
+                    candidate = str(fmt.get("url") or "")
+                    if candidate and fmt.get("acodec") not in (None, "none"):
+                        stream = candidate
+                        break
+            if not stream:
+                return None
+            identifier = str(info.get("id") or youtube_id(url))
+            return Track(
+                title=str(info.get("title") or identifier or url),
+                source=url,
+                url=url,
+                kind="video" if video else "audio",
+                duration=int(info.get("duration") or 0),
+                uploader=str(info.get("uploader") or info.get("channel") or ""),
+                thumbnail=str(info.get("thumbnail") or ""),
+                video_id=identifier,
+                height=int(info.get("height") or height or 0),
+                stream_url=stream,
+            )
+
+        try:
+            return await asyncio.to_thread(run)
+        except Exception:  # extraction failures are expected for some URLs
+            return None
+
+
 def vc_available() -> bool:
     """Can this deployment actually stream into a Telegram voice chat?
 
@@ -256,23 +384,24 @@ def vc_available() -> bool:
     is worse than one that explains what to install.
     """
     import importlib.util
-    import shutil
+
+    from meiko.modules import toolchain
 
     has_client = any(
         importlib.util.find_spec(name) is not None for name in ("pytgcalls", "pyrogram")
     )
-    has_ffmpeg = shutil.which("ffmpeg") is not None
-    return bool(has_client and has_ffmpeg)
+    return bool(has_client and toolchain.has("ffmpeg"))
 
 
 def missing_vc_requirements() -> list[str]:
     import importlib.util
-    import shutil
+
+    from meiko.modules import toolchain
 
     missing = []
     if all(importlib.util.find_spec(name) is None for name in ("pytgcalls", "pyrogram")):
         missing.append("pytgcalls (or pyrogram)")
-    if shutil.which("ffmpeg") is None:
+    if not toolchain.has("ffmpeg"):
         missing.append("ffmpeg")
     return missing
 
@@ -291,10 +420,12 @@ class MediaResolver:
         *,
         catalogue: SearchBackend | None = None,
         remote: SearchBackend | None = None,
+        extractor: YtDlpBackend | None = None,
         limit: int = 8,
     ) -> None:
         self.catalogue = catalogue
         self.remote = remote
+        self.extractor = extractor
         self.limit = limit
 
     async def resolve(self, request: PlayRequest, *, requested_by: str = "") -> ResolveOutcome:
@@ -309,6 +440,15 @@ class MediaResolver:
             )
             if track.kind == "image":
                 return ResolveOutcome(layer="direct", reason="that is an image, not playable media")
+            if not track.stream_url and self.extractor is not None:
+                # a page link (YouTube, SoundCloud…) needs extraction before it
+                # can be played; the direct-link track stays if that fails
+                resolved = await self.extractor.resolve(
+                    request.url, video=request.video, height=request.height
+                )
+                if resolved is not None:
+                    resolved.requested_by = requested_by
+                    track = resolved
             return ResolveOutcome(tracks=[track], layer="direct")
 
         if not request.query:
@@ -336,7 +476,20 @@ class MediaResolver:
                     if request.height:
                         track.height = request.height
                 return ResolveOutcome(tracks=hits, layer="remote")
-            return ResolveOutcome(layer="remote", reason="no results")
+
+        if self.extractor is not None:
+            try:
+                hits = await self.extractor.search(request.query, self.limit)
+            except Exception as exc:
+                return ResolveOutcome(layer="extract", reason=f"yt-dlp error: {exc}")
+            if hits:
+                for track in hits:
+                    track.requested_by = requested_by
+                    if request.video:
+                        track.kind = "video"
+                    if request.height:
+                        track.height = request.height
+                return ResolveOutcome(tracks=hits, layer="extract")
 
         return ResolveOutcome(reason="no source configured (catalogue empty, extractor unset)")
 
@@ -356,6 +509,7 @@ __all__ = [
     "QUALITY_LABELS",
     "RemoteBackend",
     "ResolveOutcome",
+    "YtDlpBackend",
     "SearchBackend",
     "Track",
     "VIDEO_EXT",

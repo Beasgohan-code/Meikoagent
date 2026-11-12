@@ -9,7 +9,18 @@ from __future__ import annotations
 import shutil
 from typing import Any
 
-from meiko.modules.mtproto import capabilities as mtproto_capabilities
+from meiko.modules import leech, mtproto, toolchain
+
+mtproto_capabilities = mtproto.capabilities
+
+
+def _module_present(name: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):  # pragma: no cover - broken install
+        return False
 
 
 def describe() -> dict[str, Any]:
@@ -20,15 +31,14 @@ def describe() -> dict[str, Any]:
             "sse": True,  # /api/v1/music/stream (proxy-friendly fallback)
             "polling": True,
         },
-        "media": {
-            "ffmpeg": bool(shutil.which("ffmpeg")),
-            "ffprobe": bool(shutil.which("ffprobe")),
-        },
+        "media": toolchain.describe(),
         "transfer": {
             "local": True,
             "http": True,
             "telegram": True,  # requires a running bot to upload
             "cloud": bool(shutil.which("rclone")),
+            "magnet": leech.magnet_available(),
+            "ytdlp": _module_present("yt_dlp"),
         },
         "mtproto": mtproto.to_dict(),
         "player": {

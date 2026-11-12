@@ -262,11 +262,26 @@ async def encoder_jobs(auth: CurrentAuth, session: SessionDep, bot_id: int, limi
 
 
 def _encoder_tools() -> dict[str, Any]:
+    """One answer, shared with telemetry and the encoder panel.
+
+    ``available`` stays strict (both binaries) for backwards compatibility;
+    ``ffmpeg``/``ffprobe``/``probe_fallback`` let the studio say *which* half is
+    missing instead of offering a single scary flag.
+    """
     try:
+        from meiko.modules import toolchain
         from meiko.plugins.builtin.encoder.runner import missing_tools, tools_available
     except Exception:  # pragma: no cover - encoder package absent
         return {"available": False, "missing": ["egg"]}
-    return {"available": tools_available(), "missing": missing_tools()}
+    state = toolchain.describe()
+    return {
+        "available": tools_available(),
+        "missing": missing_tools(),
+        "ffmpeg": state["ffmpeg"],
+        "ffprobe": state["ffprobe"],
+        "sources": state["sources"],
+        "probe_fallback": state["probe_fallback"],
+    }
 
 
 @router.post("/encoder/jobs/{job_id}/cancel")

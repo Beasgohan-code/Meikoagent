@@ -7,13 +7,39 @@ import { Badge, Card, EmptyState, ErrorNote, Skeleton } from "@/components/ui";
 import { ProgressBar, stateTone } from "@/components/modules";
 import { encoder, type EncoderProfile, type LedgerJob } from "@/lib/modules";
 
-export function EncoderToolsNote({ tools }: { tools?: { available: boolean; missing: string[] } }) {
+export type EncoderTools = {
+  available: boolean;
+  missing: string[];
+  ffmpeg?: boolean;
+  ffprobe?: boolean;
+  sources?: Record<string, string>;
+  probe_fallback?: boolean;
+};
+
+function toolSource(tools: EncoderTools, name: "ffmpeg" | "ffprobe"): string {
+  const source = tools.sources?.[name];
+  if (!source) return "";
+  return source === "bundled" ? " (bundled wheel)" : source === "env" ? " (env override)" : "";
+}
+
+export function EncoderToolsNote({ tools }: { tools?: EncoderTools }) {
   if (!tools) return null;
   if (tools.available) {
     return (
       <Badge status="ok">
         <CheckCircle2 className="h-3 w-3" /> ffmpeg + ffprobe ready
       </Badge>
+    );
+  }
+  // ffmpeg alone is enough to encode; ffprobe only makes metadata nicer.
+  if (tools.ffmpeg) {
+    return (
+      <div className="rounded-xl border border-sky-500/25 bg-sky-500/[0.06] px-4 py-2.5 text-xs text-sky-200">
+        <strong className="font-medium">Encoding works; metadata reads the ffmpeg banner.</strong>{" "}
+        <span className="font-mono">ffprobe</span> is not installed
+        {toolSource(tools, "ffmpeg") ? ` (ffmpeg${toolSource(tools, "ffmpeg")})` : ""}. Add ffprobe for
+        frame-accurate stream details; jobs run normally either way.
+      </div>
     );
   }
   return (
@@ -98,7 +124,7 @@ export function JobsPanel({ botId, activeOnly = false }: { botId: number; active
   );
 }
 
-export function ProfileForm({ botId, tools }: { botId: number; tools?: { available: boolean; missing: string[] } }) {
+export function ProfileForm({ botId, tools }: { botId: number; tools?: EncoderTools }) {
   const queryClient = useQueryClient();
   const presets = useQuery({ queryKey: ["encoder-presets"], queryFn: () => encoder.presets() });
   const profile = useQuery({ queryKey: ["encoder-profile", botId], queryFn: () => encoder.profile(botId) });

@@ -7,8 +7,15 @@ to a pluggable :class:`TransferBackend`:
 
 * :class:`LocalBackend` — a real, dependency-free copier for local paths and
   ``http(s)`` URL downloads via ``httpx`` (what CI and this sandbox can run),
-* ``Aria2Backend``/``RcloneBackend`` — hooks an operator can enable when those
-  daemons exist; they report ``available() == False`` otherwise.
+* :class:`YtDlpBackend`` — real site extraction (YouTube and ~1800 others) when
+  the ``yt-dlp`` package is importable; reports ``available() == False`` and
+  says how to install it otherwise,
+* :class:`DaemonBackend` — aria2/qBittorrent/rclone hooks an operator can enable
+  when those daemons exist; they report ``available() == False`` otherwise.
+
+[`pick_backend`] chooses between them from the flags a user typed, so ``-aria2``
+is never silently downgraded to an HTTP copy: either the daemon answers or the
+task fails with the reason.
 
 Everything a user sees (task ids, states, progress bar, ETA, cancel, queue
 limits, per-user concurrency) is real state, not theatre.
@@ -106,6 +113,72 @@ class LocalBackend:
                         if on_progress is not None:
                             await on_progress(done, total)
         return destination
+
+
+class YtDlpBackend:
+    """Site extraction through ``yt-dlp`` (install with ``pip install yt-dlp``)."""
+
+    name = "ytdl"
+
+    def __init__(self, *, max_bytes: int = 2000 * 1024 * 1024, binary: str = "") -> None:
+        self.max_bytes = max_bytes
+        self.binary = binary
+
+    @staticmethod
+    def module():
+        import importlib
+
+        try:
+            return importlib.import_module("yt_dlp")
+        except Exception:  # optional dependency
+            return None
+
+    def available(self) -> bool:
+        return self.module() is not None
+
+    async def fetch(self, url: str, destination: str, *, on_progress=None) -> str:
+        module = self.module()
+        if module is None:
+            raise TransferError("yt-dlp is not installed (pip install yt-dlp)")
+
+        def report(status: dict[str, Any]) -> None:
+            if on_progress is None or status.get("status") != "downloading":
+                return
+            done = int(status.get("downloaded_bytes") or 0)
+            total = int(status.get("total_bytes") or status.get("total_bytes_estimate") or 0)
+            if total > self.max_bytes:
+                raise TransferError(f"the file is larger than the {self.max_bytes} byte limit")
+            # the callback is async; schedule it without blocking the extractor
+            asyncio.get_event_loop().create_task(on_progress(done, total))
+
+        options: dict[str, Any] = {
+            "outtmpl": destination,
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "progress_hooks": [report],
+            "max_filesize": self.max_bytes,
+            "restrictfilenames": True,
+            "noplaylist": True,
+        }
+        if self.binary:
+            options["ffmpeg_location"] = self.binary
+
+        def download() -> str:
+            with module.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return str(ydl.prepare_filename(info)) if info else destination
+
+        try:
+            produced = await asyncio.to_thread(download)
+        except Exception as exc:  # yt_dlp raises its own DownloadError
+            raise TransferError(f"yt-dlp could not fetch this URL: {exc}") from exc
+        if not os.path.exists(produced):
+            # post-processing (merging) can change the extension
+            produced = destination
+        if not os.path.exists(produced):
+            raise TransferError("yt-dlp reported success but no file was written")
+        return produced
 
 
 class DaemonBackend:
@@ -375,9 +448,48 @@ def guess_kind(flags: set[str]) -> str:
     return "mirror" if "mirror" in flags or "rclone" in flags else "leech"
 
 
+def _hh_mm_ss(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def magnet_available() -> bool:
+    """BitTorrent is only honest when a daemon or a client library is present."""
+    import importlib.util
+
+    return any(importlib.util.find_spec(name) for name in ("aria2p", "qbittorrentapi", "libtorrent"))
+
+
+def pick_backend(flags: set[str] | None = None, *, endpoint: str = "", binary: str = "") -> TransferBackend:
+    """Resolve the backend a flag asks for, or explain why it cannot be used.
+
+    Order of preference: an explicitly requested daemon (fails closed), then
+    ``ytdl``, then plain HTTP.  Returning an unavailable backend instead of
+    silently substituting one is deliberate — the task then fails with
+    ``the <name> transfer backend is unavailable``, which is the truth.
+    """
+    flags = flags or set()
+    from meiko.modules.toolchain import path_of
+
+    if "ytdl" in flags:
+        return YtDlpBackend(binary=path_of("ffmpeg"))
+    if "aria2" in flags:
+        return DaemonBackend("aria2", endpoint)
+    if "qbit" in flags:
+        return DaemonBackend("qbittorrent", endpoint)
+    if "rclone" in flags:
+        return DaemonBackend("rclone", endpoint)
+    return LocalBackend()
+
+
 __all__ = [
     "CANCELLED",
     "DaemonBackend",
+    "YtDlpBackend",
+    "magnet_available",
+    "pick_backend",
     "FLAG_ALIASES",
     "LeechTask",
     "LocalBackend",

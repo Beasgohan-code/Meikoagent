@@ -31,6 +31,7 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
+from meiko.modules import toolchain
 from meiko.plugins.support import OwnCommand, Workspace, human_size
 from meiko.ui import Btn, esc, keyboard, message
 
@@ -51,6 +52,14 @@ from .plans import (
 from .runner import FFmpegMissing, encode, missing_tools, probe, tools_available
 
 OWN_COMMAND = OwnCommand(MANIFEST.commands)
+
+
+def _tool_label(state: dict[str, Any], name: str) -> str:
+    """``ready · path`` / ``ready · bundled`` / ``missing`` — never a bare bool."""
+    if not state.get(name):
+        return "missing"
+    source = (state.get("sources") or {}).get(name, "")
+    return f"ready · {source}" if source else "ready"
 MB = 1024 * 1024
 PROGRESS_KEY = "progress:{chat}:{job}"
 
@@ -176,13 +185,22 @@ class EncoderPlugin(MeikoPlugin):
     # -- info --------------------------------------------------------------
     async def cmd_help(self, message_obj: Message, _argument: str = "") -> None:
         profile = await self.profile()
+        state = toolchain.describe()
         ready = tools_available()
         builder = message("Encoder", "video" if ready else "warn")
-        builder.key_value("FFmpeg", "installed" if ready else "missing", "check" if ready else "cross")
+        builder.key_value("FFmpeg", _tool_label(state, "ffmpeg"), "check" if state["ffmpeg"] else "cross")
+        builder.key_value("ffprobe", _tool_label(state, "ffprobe"), "check" if state["ffprobe"] else "cross")
         if not ready:
             builder.line("Missing: " + ", ".join(esc(t) for t in missing_tools()), raw=True)
-            builder.line("<i>Profiles are still editable and commands still plan; "
-                         "jobs will refuse to start until FFmpeg is present.</i>", raw=True)
+            if state["probe_fallback"]:
+                builder.line(
+                    "<i>ffprobe is absent but ffmpeg is here, so metadata is read from its banner and "
+                    "encoding works normally.</i>",
+                    raw=True,
+                )
+            else:
+                builder.line("<i>Profiles are still editable and commands still plan; "
+                             "jobs will refuse to start until FFmpeg is present.</i>", raw=True)
         builder.blank()
         builder.key_value("Codec", profile.codec, "video")
         builder.key_value("CRF / preset", f"{profile.crf} / {profile.preset}", "gear")
@@ -307,15 +325,22 @@ class EncoderPlugin(MeikoPlugin):
         if document is None:
             await message_obj.reply("Reply to a video/document with <code>/encinfo</code>.")
             return
-        if not tools_available():
+        if not tools_available() and not toolchain.describe()["probe_fallback"]:
             await message_obj.reply(
                 message("ffprobe missing", "warn")
                 .line("Install <code>ffmpeg</code> (it ships ffprobe) to inspect files.", raw=True)
+                .line("<code>pip install imageio-ffmpeg</code> provides ffmpeg only; metadata is then read from "
+                       "its banner.", raw=True)
                 .build()
             )
             return
         await message_obj.reply(message("Probing…", "search").build())
         path = await self._download(message_obj, document)
+        banner = not toolchain.has("ffprobe")
+        try:
+            on_disk = Path(path).stat().st_size
+        except OSError:  # pragma: no cover - download already gone
+            on_disk = 0
         try:
             data = await probe(path)
         finally:
@@ -334,7 +359,10 @@ class EncoderPlugin(MeikoPlugin):
         if audio:
             builder.blank().line(f"Audio tracks: {len(audio)}", raw=True)
         builder.key_value("Duration", f"{duration_of(data) // 60}:{duration_of(data) % 60:02d}", "clock")
-        builder.key_value("Size", human_size(int((data.get("format") or {}).get("size", 0) or 0)), "file")
+        reported = int((data.get("format") or {}).get("size", 0) or 0)
+        builder.key_value("Size", human_size(reported or on_disk), "file")
+        if banner:
+            builder.line("<i>Read from the ffmpeg banner (ffprobe is not installed).</i>", raw=True)
         await message_obj.reply(builder.build())
 
     # -- encoding ----------------------------------------------------------
@@ -388,7 +416,7 @@ class EncoderPlugin(MeikoPlugin):
                 message("Profile is not runnable", "warn").line("; ".join(esc(p) for p in problems), raw=True).build()
             )
             return
-        if not tools_available():
+        if not toolchain.has("ffmpeg"):
             planned = " ".join(build_command("<input>", "<output>", profile))
             await message_obj.reply(
                 message("FFmpeg missing", "warn")
@@ -562,7 +590,7 @@ class EncoderPlugin(MeikoPlugin):
         running = sum(1 for task in self._jobs.values() if not task.done())
         await message_obj.reply(
             message("Encoder stats", "stats")
-            .key_value("FFmpeg", "ready" if tools_available() else "missing", "check" if tools_available() else "cross")
+            .key_value("FFmpeg", _tool_label(toolchain.describe(), "ffmpeg"), "check" if toolchain.has("ffmpeg") else "cross")
             .key_value("Running jobs", str(running), "loading")
             .key_value("Profile", f"{profile.codec} crf{profile.crf} {profile.preset}", "gear")
             .build()
