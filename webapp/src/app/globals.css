@@ -1,0 +1,94 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Self-hosted font stacks: no external font fetch at build or runtime. */
+  --font-inter: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  --surface: #0c0d12;
+  --surface-raised: #14161f;
+  --border: rgba(148, 163, 184, 0.12);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  background-color: var(--surface);
+  color: #e6e8ef;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background-image:
+    radial-gradient(900px 500px at 12% -10%, rgba(124, 58, 237, 0.16), transparent 60%),
+    radial-gradient(700px 400px at 95% 0%, rgba(6, 182, 212, 0.10), transparent 55%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.35);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.32); background-clip: content-box; }
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/[0.06] bg-charcoal-850/70 shadow-card backdrop-blur-sm;
+  }
+  .card-hover {
+    @apply transition duration-200 hover:border-violet-500/30 hover:bg-charcoal-800/80;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium
+      transition focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-gradient-to-b from-violet-500 to-indigo-600 text-white
+      shadow-[0_8px_24px_-12px_rgba(99,102,241,0.9)] hover:from-violet-400 hover:to-indigo-500;
+  }
+  .btn-ghost {
+    @apply btn border border-white/[0.08] bg-white/[0.02] text-slate-200 hover:bg-white/[0.06];
+  }
+  .btn-danger {
+    @apply btn border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20;
+  }
+  .input {
+    @apply w-full rounded-xl border border-white/[0.08] bg-charcoal-900/80 px-3 py-2 text-sm
+      text-slate-100 placeholder:text-slate-500 focus:border-violet-500/60 focus:outline-none
+      focus:ring-2 focus:ring-violet-500/20;
+  }
+  .label { @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400; }
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium;
+  }
+  .kbd {
+    @apply rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[11px] text-slate-300;
+  }
+  .nav-link {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-400 transition
+      hover:bg-white/[0.04] hover:text-slate-100;
+  }
+  .nav-link-active {
+    @apply bg-violet-500/10 text-violet-200 shadow-[inset_0_0_0_1px_rgba(139,92,246,0.18)];
+  }
+  .stat-value { @apply text-2xl font-semibold tracking-tight text-white; }
+  .stat-label { @apply text-xs uppercase tracking-wider text-slate-500; }
+  .table-base { @apply w-full text-left text-sm; }
+  .table-base th { @apply px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-slate-500; }
+  .table-base td { @apply border-t border-white/[0.05] px-4 py-3 text-slate-300; }
+}

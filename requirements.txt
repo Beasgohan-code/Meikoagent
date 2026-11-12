@@ -1,0 +1,16 @@
+# MEIKO AGENT – backend runtime
+aiogram==3.31.0
+fastapi==0.162.5
+uvicorn[standard]==0.54.0
+SQLAlchemy==2.1.8
+alembic==1.20.1
+asyncpg==0.32.0
+aiosqlite==0.22.1
+greenlet==3.5.6
+redis==8.1.0
+pydantic==2.13.5
+pydantic-settings==2.16.2
+cryptography==50.0.2
+httpx==0.28.1
+croniter==7.0.0
+python-multipart==0.0.33
