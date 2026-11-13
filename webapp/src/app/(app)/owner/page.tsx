@@ -22,6 +22,7 @@ type Tab =
   | "bots"
   | "plugins"
   | "marketplace"
+  | "infrastructure"
   | "capabilities"
   | "audit"
   | "security";
@@ -98,10 +99,51 @@ const TABS: Tab[] = [
   "bots",
   "plugins",
   "marketplace",
+  "infrastructure",
   "capabilities",
   "audit",
   "security",
 ];
+
+type Infrastructure = {
+  api: { status: string; workers_registered: number; uptime_seconds: number | null };
+  bot_workers: {
+    name: string;
+    running_bots: number;
+    capacity: number;
+    heartbeat_age_seconds: number | null;
+    ids: number[];
+  };
+  worker_rows: { id: number; name: string; status: string; load: string; hostname: string; pid: number }[];
+  scheduler: { enabled: boolean; observed_here: boolean };
+  watchdog: { enabled: boolean; interval_seconds: number };
+  queue: { available: boolean; reason?: string } & Record<string, unknown>;
+  database: { status: string; [key: string]: unknown };
+  redis: { status: string } & Record<string, unknown>;
+  storage: { data_dir: string; free_bytes: number; total_bytes: number; used_percent: number | null };
+  ffmpeg: Record<string, unknown>;
+  mtproto: { available: boolean; reason?: string } & Record<string, unknown>;
+  process: { uptime_seconds: number | null; cpu_percent: number | null; rss_bytes: number | null; source: string };
+};
+
+type SecurityOverview = {
+  window_days: number;
+  events: {
+    id: number;
+    action: string;
+    actor_user_id: number | null;
+    target: string;
+    ip_address: string;
+    created_at: string;
+    metadata: Record<string, unknown>;
+  }[];
+  failed_auth: number;
+  logins: number;
+  invalid_bot_tokens: number;
+  active_api_keys: number;
+  maintenance_mode: boolean;
+  secrets: Record<string, boolean>;
+};
 
 type MarketplaceOverview = {
   summary: {
@@ -215,6 +257,17 @@ function OwnerContent() {
       void queryClient.invalidateQueries({ queryKey: ["owner-audit"] });
     },
     onError: (err: Error) => setError(err.message),
+  });
+
+  const infrastructure = useQuery({
+    queryKey: ["owner-infrastructure"],
+    queryFn: () => api.get<Infrastructure>("/owner/infrastructure"),
+    enabled: tab === "infrastructure",
+  });
+  const securityPosture = useQuery({
+    queryKey: ["owner-security-posture"],
+    queryFn: () => api.get<SecurityOverview>("/owner/security"),
+    enabled: tab === "security" || tab === "overview",
   });
 
   const marketplace = useQuery({
@@ -334,6 +387,7 @@ function OwnerContent() {
           { id: "bots" as Tab, label: "All bots" },
           { id: "plugins" as Tab, label: "Plugins", count: pluginOverview.data?.totals.catalogue },
           { id: "marketplace" as Tab, label: "Marketplace admin", count: marketplace.data?.summary.pending_review },
+          { id: "infrastructure" as Tab, label: "Infrastructure" },
           { id: "capabilities" as Tab, label: "Capabilities" },
           { id: "audit" as Tab, label: "Audit log" },
           { id: "security" as Tab, label: "Security" },
@@ -900,6 +954,129 @@ function OwnerContent() {
         </div>
       ) : null}
 
+      {tab === "infrastructure" ? (
+        infrastructure.isLoading ? (
+          <Skeleton className="h-64" />
+        ) : infrastructure.data ? (
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <Stat
+                label="API"
+                value={infrastructure.data.api.status}
+                hint={`${infrastructure.data.api.workers_registered} workers registered`}
+              />
+              <Stat
+                label="Bot workers"
+                value={`${infrastructure.data.bot_workers.running_bots}/${infrastructure.data.bot_workers.capacity}`}
+                hint={`heartbeat ${infrastructure.data.bot_workers.heartbeat_age_seconds ?? "—"}s ago`}
+              />
+              <Stat
+                label="Storage free"
+                value={`${Math.round(infrastructure.data.storage.free_bytes / 1e9)} GB`}
+                hint={`${infrastructure.data.storage.used_percent ?? "?"}% used`}
+              />
+              <Stat
+                label="Process"
+                value={
+                  infrastructure.data.process.rss_bytes
+                    ? `${Math.round(infrastructure.data.process.rss_bytes / 1e6)} MB`
+                    : "n/a"
+                }
+                hint={infrastructure.data.process.source}
+              />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <p className="text-sm font-medium text-white">Components</p>
+                <ul className="mt-3 space-y-1.5 text-xs">
+                  {[
+                    ["Database", infrastructure.data.database.status, "primary datastore"],
+                    ["Cache / Redis", infrastructure.data.redis.status, "rate limits + sessions"],
+                    [
+                      "Scheduler",
+                      infrastructure.data.scheduler.enabled ? "enabled" : "disabled",
+                      infrastructure.data.scheduler.observed_here
+                        ? "ticking in this process"
+                        : "runs in the worker process — not observable from here",
+                    ],
+                    [
+                      "Watchdog",
+                      `${infrastructure.data.watchdog.enabled ? "enabled" : "disabled"} · ${infrastructure.data.watchdog.interval_seconds}s`,
+                      "bot health recovery",
+                    ],
+                    [
+                      "Job queue",
+                      infrastructure.data.queue.available ? "available" : "not in this process",
+                      infrastructure.data.queue.available
+                        ? "shared queue"
+                        : String(infrastructure.data.queue.reason ?? ""),
+                    ],
+                    [
+                      "FFmpeg",
+                      infrastructure.data.ffmpeg.available === false ? "missing" : "resolved",
+                      JSON.stringify(infrastructure.data.ffmpeg).slice(0, 120),
+                    ],
+                    [
+                      "MTProto adapter",
+                      infrastructure.data.mtproto.available ? "available" : "unavailable",
+                      String(infrastructure.data.mtproto.reason ?? "owner session configured"),
+                    ],
+                  ].map(([label, status, detail]) => (
+                    <li
+                      key={label}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/[0.05] px-3 py-2"
+                    >
+                      <div>
+                        <p className="text-slate-200">{label}</p>
+                        <p className="text-[11px] text-slate-500">{detail}</p>
+                      </div>
+                      <Badge status={String(status)}>{String(status)}</Badge>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+
+              <Card>
+                <p className="text-sm font-medium text-white">Worker rows</p>
+                {infrastructure.data.worker_rows.length ? (
+                  <table className="table-base mt-2">
+                    <thead>
+                      <tr>
+                        <th>Worker</th>
+                        <th>Host</th>
+                        <th>Load</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {infrastructure.data.worker_rows.map((worker) => (
+                        <tr key={worker.id}>
+                          <td className="text-sm text-slate-200">{worker.name}</td>
+                          <td className="font-mono text-xs text-slate-500">
+                            {worker.hostname}:{worker.pid}
+                          </td>
+                          <td className="font-mono text-xs">{worker.load}</td>
+                          <td>
+                            <Badge status={worker.status === "online" ? "running" : worker.status}>
+                              {worker.status}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="mt-3 text-sm text-slate-500">No workers have registered.</p>
+                )}
+              </Card>
+            </div>
+          </div>
+        ) : (
+          <ErrorNote message="Infrastructure data unavailable." onRetry={() => infrastructure.refetch()} />
+        )
+      ) : null}
+
       {tab === "capabilities" ? (
         capabilities.isLoading ? (
           <Skeleton className="h-48" />
@@ -958,39 +1135,109 @@ function OwnerContent() {
       ) : null}
 
       {tab === "security" ? (
-        security.isLoading ? (
+        securityPosture.isLoading ? (
           <Skeleton className="h-48" />
-        ) : security.data?.length ? (
-          <Card className="p-0">
-            <table className="table-base">
-              <thead>
-                <tr>
-                  <th>Event</th>
-                  <th>Actor</th>
-                  <th>IP</th>
-                  <th>When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {security.data.map((event) => (
-                  <tr key={event.id}>
-                    <td>
-                      <Badge status={event.action.includes("role") ? "warning" : "info"}>{event.action}</Badge>
-                    </td>
-                    <td className="font-mono text-xs">{event.actor_user_id ?? "system"}</td>
-                    <td className="font-mono text-xs text-slate-500">{event.ip_address ?? "—"}</td>
-                    <td className="text-xs text-slate-500">{formatDate(event.created_at)}</td>
-                  </tr>
+        ) : securityPosture.data ? (
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <Stat label="Logins (7d)" value={securityPosture.data.logins} />
+              <Stat label="Failed auth (7d)" value={securityPosture.data.failed_auth} />
+              <Stat label="Invalid bot tokens" value={securityPosture.data.invalid_bot_tokens} />
+              <Stat label="Active API keys" value={securityPosture.data.active_api_keys} />
+            </div>
+
+            <Card>
+              <p className="text-sm font-medium text-white">Secrets</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Presence only — a secret value is never returned by any endpoint.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {Object.entries(securityPosture.data.secrets).map(([name, present]) => (
+                  <span
+                    key={name}
+                    className={`badge ${present ? "border-emerald-500/30 text-emerald-300" : "border-amber-500/30 text-amber-300"}`}
+                  >
+                    {name}: {present ? "configured" : "not set"}
+                  </span>
                 ))}
-              </tbody>
-            </table>
-          </Card>
+                <span className="badge border-white/10 bg-white/[0.03]">
+                  maintenance: {securityPosture.data.maintenance_mode ? "on" : "off"}
+                </span>
+              </div>
+            </Card>
+
+            {securityPosture.data.events.length ? (
+              <Card className="p-0">
+                <table className="table-base">
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Actor</th>
+                      <th>Target</th>
+                      <th>IP</th>
+                      <th>When</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {securityPosture.data.events.map((event) => (
+                      <tr key={event.id}>
+                        <td>
+                          <Badge
+                            status={
+                              event.action.includes("failed") || event.action.includes("blocked")
+                                ? "warning"
+                                : "info"
+                            }
+                          >
+                            {event.action}
+                          </Badge>
+                        </td>
+                        <td className="font-mono text-xs">{event.actor_user_id ?? "system"}</td>
+                        <td className="font-mono text-xs text-slate-500">{event.target || "—"}</td>
+                        <td className="font-mono text-xs text-slate-500">{event.ip_address || "—"}</td>
+                        <td className="text-xs text-slate-500">{formatDate(event.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            ) : security.data?.length ? (
+              <Card className="p-0">
+                <table className="table-base">
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Actor</th>
+                      <th>IP</th>
+                      <th>When</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {security.data.map((event) => (
+                      <tr key={event.id}>
+                        <td>
+                          <Badge status={event.action.includes("role") ? "warning" : "info"}>
+                            {event.action}
+                          </Badge>
+                        </td>
+                        <td className="font-mono text-xs">{event.actor_user_id ?? "system"}</td>
+                        <td className="font-mono text-xs text-slate-500">{event.ip_address ?? "—"}</td>
+                        <td className="text-xs text-slate-500">{formatDate(event.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            ) : (
+              <EmptyState
+                title="No security events in 7 days"
+                description="Logins, role changes, plugin approvals and credential changes are recorded here."
+                icon={<ShieldAlert className="h-6 w-6" />}
+              />
+            )}
+          </div>
         ) : (
-          <EmptyState
-            title="No security events in 7 days"
-            description="Logins, role changes and status changes are recorded as security events."
-            icon={<ShieldAlert className="h-6 w-6" />}
-          />
+          <ErrorNote message="Security overview unavailable." onRetry={() => securityPosture.refetch()} />
         )
       ) : null}
     </div>

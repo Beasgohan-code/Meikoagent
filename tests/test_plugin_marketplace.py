@@ -557,3 +557,77 @@ class TestMarketplaceApi:
         assert overview["summary"]["packages"] == 1
         assert overview["summary"]["pending_review"] == 1
         assert overview["packages"][0]["slug"] == "counted_plugin"
+
+
+class TestOwnerInfrastructureAndSecurity:
+    """PART 4: the control center reports components, not guesses."""
+
+    async def test_infrastructure_is_owner_only(self, client):
+        token, _ = await login(client, 5100)
+        assert (
+            await client.get("/api/v1/owner/infrastructure", headers=headers(token))
+        ).status_code == 403
+        assert (
+            await client.get("/api/v1/owner/security", headers=headers(token))
+        ).status_code == 403
+
+    async def test_infrastructure_reports_each_component(self, client):
+        owner = await make_owner(client, 5101)
+        body = (await client.get("/api/v1/owner/infrastructure", headers=headers(owner))).json()
+        for key in (
+            "api",
+            "bot_workers",
+            "worker_rows",
+            "scheduler",
+            "watchdog",
+            "queue",
+            "database",
+            "redis",
+            "storage",
+            "ffmpeg",
+            "mtproto",
+            "process",
+        ):
+            assert key in body, key
+        assert body["database"]["status"] in ("ok", "degraded", "error")
+        assert isinstance(body["bot_workers"]["ids"], list)
+        # The scheduler ticks in another process; the API must not claim to see them.
+        assert body["scheduler"]["observed_here"] is False
+        assert "path" in body["ffmpeg"] or "tools" in body["ffmpeg"] or body["ffmpeg"]
+
+    async def test_queue_is_reported_honestly_when_absent(self, client):
+        owner = await make_owner(client, 5102)
+        body = (await client.get("/api/v1/owner/infrastructure", headers=headers(owner))).json()
+        assert "available" in body["queue"]
+        if not body["queue"]["available"]:
+            assert body["queue"]["reason"]
+
+    async def test_security_never_leaks_secret_values(self, client):
+        owner = await make_owner(client, 5103)
+        body = (await client.get("/api/v1/owner/security", headers=headers(owner))).json()
+        assert set(body["secrets"]) == {
+            "encryption_key_configured",
+            "session_secret_configured",
+            "dev_auth_enabled",
+        }
+        assert all(isinstance(value, bool) for value in body["secrets"].values())
+        assert "events" in body and "failed_auth" in body
+
+    async def test_security_records_owner_actions(self, client, settings):
+        owner = await make_owner(client, 5104)
+        created = await client.post(
+            "/api/v1/owner/marketplace/sources?url=https://github.com/o/r&ref=main",
+            headers=headers(owner),
+        )
+        source_id = created.json()["id"]
+        await stage_checkout(settings, source_id, slug="audited_plugin")
+        await client.post(
+            f"/api/v1/owner/marketplace/sources/{source_id}/import", headers=headers(owner)
+        )
+        await client.post(
+            "/api/v1/owner/marketplace/packages/audited_plugin/approve", headers=headers(owner)
+        )
+        body = (await client.get("/api/v1/owner/security", headers=headers(owner))).json()
+        actions = {event["action"] for event in body["events"]}
+        assert "owner.marketplace_source_added" in actions
+        assert "owner.marketplace_approved" in actions

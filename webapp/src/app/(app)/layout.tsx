@@ -54,6 +54,7 @@ const OWNER_NAV: { href: string; label: string; icon: React.ElementType }[] = [
   { href: "/owner?tab=bots", label: "Bots", icon: Bot },
   { href: "/owner?tab=plugins", label: "Plugins & global scope", icon: Boxes },
   { href: "/owner?tab=marketplace", label: "Marketplace admin", icon: Download },
+  { href: "/owner?tab=infrastructure", label: "Infrastructure", icon: Server },
   { href: "/owner?tab=capabilities", label: "Capabilities", icon: Sliders },
   { href: "/owner?tab=audit", label: "Audit history", icon: Activity },
   { href: "/owner?tab=security", label: "Security", icon: Shield },

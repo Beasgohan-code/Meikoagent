@@ -760,3 +760,181 @@ async def reject_package(
     )
     return {"slug": slug, "version": version.version, "approval": version.approval,
             "package_state": package.state}
+
+
+# ------------------------------------------------------------ infrastructure
+@router.get("/infrastructure", response_model=dict)
+async def infrastructure(auth: OwnerAuth, session: SessionDep) -> dict[str, Any]:
+    """Platform-wide wiring, for the owner view.
+
+    Every entry comes from the component that owns it: the worker manager for
+    bots, the queue for jobs, the toolchain resolver for binaries, the adapter for
+    MTProto.  Nothing is inferred from "it is configured, so it is probably fine".
+    """
+    import shutil
+    import time
+
+    from meiko.cache import get_cache
+    from meiko.config import get_settings
+    from meiko.db.base import database_health
+    from meiko.modules import mtproto, toolchain
+    from meiko.runtime.manager import get_worker_manager
+
+    settings = get_settings()
+    manager = get_worker_manager()
+    db = await database_health()
+    cache = await get_cache().ping()
+    disk = shutil.disk_usage(settings.data_dir)
+    # The shared job queue lives in the worker/scheduler process.  When this API
+    # process owns one, report it; otherwise say so instead of inventing numbers.
+    try:
+        from meiko.runtime.queue import get_queue  # type: ignore[attr-defined]
+
+        queue = get_queue()
+        queue_stats = {"available": True, **queue.stats()}
+    except Exception:
+        queue_stats = {
+            "available": False,
+            "reason": "the job queue is owned by the worker process; see /platform",
+        }
+    process: dict[str, Any] = {"uptime_seconds": None}
+    try:
+        import psutil  # type: ignore[import-not-found]
+
+        proc = psutil.Process()
+        process = {
+            "uptime_seconds": int(time.time() - proc.create_time()),
+            "cpu_percent": psutil.cpu_percent(interval=0.0),
+            "rss_bytes": proc.memory_info().rss,
+            "threads": proc.num_threads(),
+            "source": "psutil",
+        }
+    except Exception:  # pragma: no cover - psutil optional
+        process = {
+            "uptime_seconds": None,
+            "cpu_percent": None,
+            "rss_bytes": None,
+            "source": "unavailable (psutil not installed)",
+        }
+
+    workers = (await session.scalars(select(Worker).order_by(Worker.id))).all()
+    return {
+        "api": {
+            "status": db["status"] if db["status"] == "ok" else "degraded",
+            "workers_registered": len(workers),
+            "uptime_seconds": process.get("uptime_seconds"),
+        },
+        "bot_workers": {
+            "name": manager.state.name,
+            "running_bots": len(manager.state.applications),
+            "capacity": manager.state.capacity,
+            "heartbeat_age_seconds": int(time.time() - manager.state.last_heartbeat)
+            if manager.state.last_heartbeat
+            else None,
+            "ids": sorted(manager.state.applications),
+        },
+        "worker_rows": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "status": row.status,
+                "load": f"{row.current_load}/{row.capacity}",
+                "hostname": row.hostname,
+                "pid": row.pid,
+            }
+            for row in workers
+        ],
+        "scheduler": {
+            "enabled": bool(settings.scheduler_enabled),
+            # The scheduler object itself lives in the scheduler process; this is
+            # the *configuration*, and the API does not pretend to observe ticks it
+            # cannot see.
+            "observed_here": False,
+        },
+        "watchdog": {
+            "enabled": bool(settings.watchdog_enabled),
+            "interval_seconds": settings.watchdog_interval_seconds,
+        },
+        "queue": queue_stats,
+        "database": db,
+        "redis": cache,
+        "storage": {
+            "data_dir": str(settings.data_dir),
+            "free_bytes": disk.free,
+            "total_bytes": disk.total,
+            "used_percent": round(100 * (disk.total - disk.free) / disk.total, 1) if disk.total else None,
+        },
+        "ffmpeg": toolchain.describe(),
+        "mtproto": mtproto.capabilities().to_dict(),
+        "process": process,
+        "background_tasks": {
+            "polling_bots": len(manager.state.applications),
+            # Stated as a count, not a claim about health.
+            "note": "counts come from the worker manager; per-task detail is in /platform/logs",
+        },
+    }
+
+
+@router.get("/security", response_model=dict)
+async def security_overview(auth: OwnerAuth, session: SessionDep) -> dict[str, Any]:
+    """Security posture: logins, failures, permission and credential changes."""
+    from meiko.config import get_settings
+    from meiko.db.models import ApiKey
+
+    since = datetime.utcnow() - timedelta(days=7)
+    interesting = [
+        "auth.login",
+        "auth.failed",
+        "auth.api_key_created",
+        "auth.api_key_revoked",
+        "owner.role_changed",
+        "owner.user_status",
+        "owner.plugin_approved",
+        "owner.plugin_blocked",
+        "owner.marketplace_approved",
+        "owner.marketplace_rejected",
+        "owner.marketplace_source_added",
+        "owner.capability_changed",
+        "plugin.global_installed",
+    ]
+    rows = (
+        await session.scalars(
+            select(AuditLog)
+            .where(AuditLog.created_at >= since, AuditLog.action.in_(interesting))
+            .order_by(AuditLog.id.desc())
+            .limit(200)
+        )
+    ).all()
+    bot_tokens = (
+        await session.scalars(select(BotAccount).where(BotAccount.token_valid.is_(False)))
+    ).all()
+    active_keys = (
+        await session.scalars(select(ApiKey).where(ApiKey.revoked_at.is_(None)))
+    ).all()
+    settings = get_settings()
+    return {
+        "window_days": 7,
+        "events": [
+            {
+                "id": row.id,
+                "action": row.action,
+                "actor_user_id": row.actor_user_id,
+                "target": f"{row.target_type}:{row.target_id}" if row.target_type else "",
+                "ip_address": row.ip_address,
+                "created_at": row.created_at.isoformat(),
+                "metadata": row.metadata_json,
+            }
+            for row in rows
+        ],
+        "failed_auth": sum(1 for row in rows if row.action == "auth.failed"),
+        "logins": sum(1 for row in rows if row.action == "auth.login"),
+        "invalid_bot_tokens": len(bot_tokens),
+        "active_api_keys": len(active_keys),
+        "maintenance_mode": settings.maintenance_mode,
+        "secrets": {
+            # Never the value - only whether it is present, and where it comes from.
+            "encryption_key_configured": bool(settings.encryption_key),
+            "session_secret_configured": bool(getattr(settings, "secret_key", "")),
+            "dev_auth_enabled": bool(settings.auth_dev_mode) and not settings.is_production,
+        },
+    }
