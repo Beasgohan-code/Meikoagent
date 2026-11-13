@@ -13,10 +13,18 @@ import {
 } from "lucide-react";
 import { api, formatDate } from "@/lib/api";
 import type { CapabilityState, User } from "@/lib/types";
-import { Badge, Card, EmptyState, ErrorNote, SectionHeader, Skeleton, Stat, Toggle } from "@/components/ui";
+import { Badge, Card, EmptyState, ErrorNote, Field, SectionHeader, Skeleton, Stat, Toggle } from "@/components/ui";
 import { SearchInput, Tabs } from "@/components/patterns";
 
-type Tab = "overview" | "users" | "bots" | "plugins" | "capabilities" | "audit" | "security";
+type Tab =
+  | "overview"
+  | "users"
+  | "bots"
+  | "plugins"
+  | "marketplace"
+  | "capabilities"
+  | "audit"
+  | "security";
 
 type OwnerOverview = {
   users: number;
@@ -84,7 +92,72 @@ type PluginOverview = {
   totals: Record<string, number>;
 };
 
-const TABS: Tab[] = ["overview", "users", "bots", "plugins", "capabilities", "audit", "security"];
+const TABS: Tab[] = [
+  "overview",
+  "users",
+  "bots",
+  "plugins",
+  "marketplace",
+  "capabilities",
+  "audit",
+  "security",
+];
+
+type MarketplaceOverview = {
+  summary: {
+    sources: number;
+    packages: number;
+    versions: number;
+    pending_review: number;
+    approved: number;
+    blocked: number;
+    by_state: Record<string, number>;
+  };
+  packages: {
+    id: number;
+    slug: string;
+    name: string;
+    state: string;
+    blocked_reason: string;
+    source_id: number;
+    latest: { version: string; approval: string; published: boolean; commit: string; licence: string } | null;
+  }[];
+  sources: {
+    id: number;
+    name: string;
+    url: string;
+    ref: string;
+    licence: string;
+    licence_ok: boolean;
+    trust: string;
+    enabled: boolean;
+  }[];
+};
+
+type PackageDetail = {
+  slug: string;
+  state: string;
+  blocked_reason: string;
+  review_notes: string;
+  installable: boolean;
+  versions: {
+    id: number;
+    version: string;
+    approval: string;
+    published: boolean;
+    commit: string;
+    checksum: string;
+    licence: string;
+    inspection: {
+      ok: boolean;
+      licence: string;
+      commit: string;
+      execution_attempted: boolean;
+      findings: { severity: string; code: string; message: string; path: string }[];
+      files: string[];
+    } | null;
+  }[];
+};
 
 export default function OwnerPage() {
   return (
@@ -139,6 +212,55 @@ function OwnerContent() {
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["owner-plugin-overview"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner-audit"] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const marketplace = useQuery({
+    queryKey: ["owner-marketplace"],
+    queryFn: () => api.get<MarketplaceOverview>("/owner/marketplace/overview"),
+    enabled: tab === "marketplace",
+  });
+  const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
+  const packageDetail = useQuery({
+    queryKey: ["owner-marketplace-package", selectedPackage],
+    queryFn: () => api.get<PackageDetail>(`/owner/marketplace/packages/${selectedPackage}`),
+    enabled: tab === "marketplace" && Boolean(selectedPackage),
+  });
+  const [sourceForm, setSourceForm] = useState({ url: "", name: "", ref: "main", license: "" });
+
+  const addSource = useMutation({
+    mutationFn: () =>
+      api.post(
+        `/owner/marketplace/sources?url=${encodeURIComponent(sourceForm.url)}&name=${encodeURIComponent(
+          sourceForm.name,
+        )}&ref=${encodeURIComponent(sourceForm.ref || "main")}&license=${encodeURIComponent(sourceForm.license)}`,
+      ),
+    onSuccess: () => {
+      setError(null);
+      setSourceForm({ url: "", name: "", ref: "main", license: "" });
+      void queryClient.invalidateQueries({ queryKey: ["owner-marketplace"] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const importSource = useMutation({
+    mutationFn: (sourceId: number) => api.post(`/owner/marketplace/sources/${sourceId}/import`),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["owner-marketplace"] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const reviewPackage = useMutation({
+    mutationFn: ({ slug, action }: { slug: string; action: "approve" | "reject" }) =>
+      api.post(`/owner/marketplace/packages/${slug}/${action}`),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["owner-marketplace"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner-marketplace-package"] });
       void queryClient.invalidateQueries({ queryKey: ["owner-audit"] });
     },
     onError: (err: Error) => setError(err.message),
@@ -211,6 +333,7 @@ function OwnerContent() {
           { id: "users" as Tab, label: "Users" },
           { id: "bots" as Tab, label: "All bots" },
           { id: "plugins" as Tab, label: "Plugins", count: pluginOverview.data?.totals.catalogue },
+          { id: "marketplace" as Tab, label: "Marketplace admin", count: marketplace.data?.summary.pending_review },
           { id: "capabilities" as Tab, label: "Capabilities" },
           { id: "audit" as Tab, label: "Audit log" },
           { id: "security" as Tab, label: "Security" },
@@ -543,6 +666,237 @@ function OwnerContent() {
               </tbody>
             </table>
           </Card>
+        </div>
+      ) : null}
+
+      {tab === "marketplace" ? (
+        <div className="space-y-4">
+          <Card className="border-sky-500/25 bg-sky-500/[0.04]">
+            <p className="text-sm font-medium text-sky-100">Import inspects, it never executes</p>
+            <p className="mt-1 text-xs text-sky-100/70">
+              A source is registered here, then inspected against a checkout the operator placed under{" "}
+              <span className="kbd">$DATA_DIR/plugin_sources/&lt;id&gt;</span>. The pipeline validates the URL,
+              pins the commit, checks the licence, validates the manifest and scans the source statically —
+              <span className="kbd">setup.py</span> and shell hooks are never run. Approving a version is a
+              separate decision from any bot running it.
+            </p>
+          </Card>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <Stat label="Sources" value={marketplace.data?.summary.sources ?? "…"} />
+            <Stat label="Packages" value={marketplace.data?.summary.packages ?? "…"} />
+            <Stat label="Pending review" value={marketplace.data?.summary.pending_review ?? "…"} />
+            <Stat label="Blocked" value={marketplace.data?.summary.blocked ?? "…"} hint="failed inspection" />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="space-y-3">
+              <p className="text-sm font-medium text-white">Source repositories</p>
+              {marketplace.data?.sources.length ? (
+                <ul className="space-y-2">
+                  {marketplace.data.sources.map((source) => (
+                    <li key={source.id} className="rounded-xl border border-white/[0.06] px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-slate-100">{source.name}</p>
+                          <p className="truncate font-mono text-[11px] text-slate-500">
+                            {source.url} @ {source.ref}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge status={source.licence_ok ? "approved" : "warning"}>
+                            {source.licence || "no licence"}
+                          </Badge>
+                          <button
+                            className="btn-ghost px-2 py-1 text-xs"
+                            onClick={() => importSource.mutate(source.id)}
+                            disabled={importSource.isPending}
+                          >
+                            Inspect &amp; import
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-slate-500">No sources registered yet.</p>
+              )}
+            </Card>
+
+            <Card className="space-y-3">
+              <p className="text-sm font-medium text-white">Add a source</p>
+              <Field label="Repository URL" hint="github.com / gitlab.com / codeberg.org over https">
+                <input
+                  className="input"
+                  value={sourceForm.url}
+                  onChange={(event) => setSourceForm({ ...sourceForm, url: event.target.value })}
+                  placeholder="https://github.com/owner/repo"
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Name">
+                  <input
+                    className="input"
+                    value={sourceForm.name}
+                    onChange={(event) => setSourceForm({ ...sourceForm, name: event.target.value })}
+                    placeholder="optional label"
+                  />
+                </Field>
+                <Field label="Ref" hint="branch, tag or commit">
+                  <input
+                    className="input"
+                    value={sourceForm.ref}
+                    onChange={(event) => setSourceForm({ ...sourceForm, ref: event.target.value })}
+                  />
+                </Field>
+              </div>
+              <Field label="Licence" hint="MIT, Apache-2.0, BSD-2/3-Clause, ISC, MPL-2.0, Unlicense">
+                <input
+                  className="input"
+                  value={sourceForm.license}
+                  onChange={(event) => setSourceForm({ ...sourceForm, license: event.target.value })}
+                  placeholder="MIT"
+                />
+              </Field>
+              <button
+                className="btn-primary"
+                onClick={() => addSource.mutate()}
+                disabled={addSource.isPending || !sourceForm.url}
+              >
+                Register source
+              </button>
+            </Card>
+          </div>
+
+          <Card className="p-0">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Package</th>
+                  <th>State</th>
+                  <th>Version</th>
+                  <th>Commit</th>
+                  <th>Licence</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {(marketplace.data?.packages ?? []).map((pkg) => (
+                  <tr key={pkg.id}>
+                    <td>
+                      <button
+                        className="text-left text-sm text-slate-100 hover:text-violet-200"
+                        onClick={() => setSelectedPackage(pkg.slug)}
+                      >
+                        {pkg.name}
+                      </button>
+                      <p className="font-mono text-[11px] text-slate-500">{pkg.slug}</p>
+                      {pkg.blocked_reason ? (
+                        <p className="mt-0.5 text-[11px] text-rose-300">{pkg.blocked_reason}</p>
+                      ) : null}
+                    </td>
+                    <td>
+                      <Badge status={pkg.state}>{pkg.state}</Badge>
+                    </td>
+                    <td className="font-mono text-xs text-slate-400">
+                      {pkg.latest ? `${pkg.latest.version} · ${pkg.latest.approval}` : "—"}
+                    </td>
+                    <td className="font-mono text-xs text-slate-500">
+                      {pkg.latest?.commit || "—"}
+                    </td>
+                    <td className="text-xs text-slate-400">{pkg.latest?.licence || "—"}</td>
+                    <td>
+                      <div className="flex justify-end gap-1">
+                        <button
+                          className="btn-ghost px-2 py-1 text-xs"
+                          onClick={() => reviewPackage.mutate({ slug: pkg.slug, action: "approve" })}
+                          disabled={reviewPackage.isPending || pkg.state === "blocked"}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="btn-danger px-2 py-1 text-xs"
+                          onClick={() => reviewPackage.mutate({ slug: pkg.slug, action: "reject" })}
+                          disabled={reviewPackage.isPending}
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!(marketplace.data?.packages ?? []).length ? (
+              <p className="px-4 py-6 text-sm text-slate-500">
+                Nothing imported yet. Register a source, place its checkout on disk, then inspect it.
+              </p>
+            ) : null}
+          </Card>
+
+          {selectedPackage ? (
+            <Card className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-white">Inspection · {selectedPackage}</p>
+                <button className="btn-ghost px-2 py-1 text-xs" onClick={() => setSelectedPackage(null)}>
+                  Close
+                </button>
+              </div>
+              {packageDetail.isLoading ? (
+                <Skeleton className="h-24" />
+              ) : packageDetail.data ? (
+                <>
+                  <p className="text-xs text-slate-400">
+                    installable: <span className="font-mono">{String(packageDetail.data.installable)}</span> ·{" "}
+                    execution_attempted:{" "}
+                    <span className="font-mono">
+                      {String(packageDetail.data.versions[0]?.inspection?.execution_attempted ?? false)}
+                    </span>
+                  </p>
+                  <ul className="space-y-1">
+                    {(packageDetail.data.versions[0]?.inspection?.findings ?? []).map((finding, index) => (
+                      <li
+                        key={`${finding.code}-${index}`}
+                        className="flex items-start gap-2 rounded-lg border border-white/[0.05] px-3 py-1.5"
+                      >
+                        <Badge
+                          status={
+                            finding.severity === "critical" || finding.severity === "error"
+                              ? "error"
+                              : finding.severity === "warning"
+                                ? "warning"
+                                : "info"
+                          }
+                        >
+                          {finding.severity}
+                        </Badge>
+                        <div className="min-w-0">
+                          <p className="font-mono text-[11px] text-slate-500">{finding.code}</p>
+                          <p className="text-xs text-slate-300">
+                            {finding.message}
+                            {finding.path ? <span className="text-slate-500"> — {finding.path}</span> : null}
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {(packageDetail.data.versions[0]?.inspection?.files ?? []).length ? (
+                    <details className="text-xs text-slate-500">
+                      <summary className="cursor-pointer">
+                        {packageDetail.data.versions[0].inspection?.files.length} files listed
+                      </summary>
+                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-black/30 p-2 font-mono text-[11px]">
+                        {packageDetail.data.versions[0].inspection?.files.join("\n")}
+                      </pre>
+                    </details>
+                  ) : null}
+                </>
+              ) : (
+                <ErrorNote message="Could not load the package." onRetry={() => packageDetail.refetch()} />
+              )}
+            </Card>
+          ) : null}
         </div>
       ) : null}
 
