@@ -28,6 +28,7 @@ from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.plugins.manifest import PluginManifest
 from meiko.plugins.support import OwnCommand, PluginState
+from meiko.security.crypto import signing_secret
 from meiko.ui import Btn, esc, keyboard, message
 
 from .gate import (
@@ -60,7 +61,10 @@ class LinkSharePlugin(MeikoPlugin):
 
     # -- lifecycle ---------------------------------------------------------
     async def on_start(self, ctx: PluginContext) -> None:
-        secret = str(self.config("link_secret", "") or f"{ctx.scope.key}:{MANIFEST.slug}")
+        # Without a configured secret this used to be ``"<scope>:linkshare"`` -- a
+        # string anybody can recompute -- and the verify button is authenticated
+        # only by an HMAC over ``code:user_id``.  Fall back to the installation key.
+        secret = str(self.config("link_secret", "") or signing_secret("linkshare-plugin"))
         self._registry = await LinkRegistry(PluginState(ctx), secret).load()
         self._mode = str(self.config("linkmode", "join"))
         router = Router(name="plugin:linkshare")

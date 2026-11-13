@@ -47,6 +47,22 @@ def _load_or_create_key() -> str:
     return key
 
 
+def signing_secret(purpose: str) -> str:
+    """A stable secret derived from the installation key, for signing tokens.
+
+    Callers used to fall back to public literals ("meiko-linkshare",
+    "meiko-links") or to guessable values built from the chat id when no key was
+    configured, which makes the HMACs they produce forgeable.  Deriving from the
+    key file keeps tokens stable across restarts while never being guessable, and
+    keeps each purpose' keys independent.
+    """
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    root = _load_or_create_key().encode()
+    return _hmac.new(root, f"meiko-signing:{purpose}".encode(), _hashlib.sha256).hexdigest()
+
+
 def fernet() -> Fernet:
     return Fernet(_load_or_create_key().encode())
 

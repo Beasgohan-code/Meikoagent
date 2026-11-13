@@ -185,7 +185,11 @@ class LinkRegistry:
 
             store = PluginState(store)
         self.store = store
-        self.secret = secret or "meiko-links"
+        if not secret:
+            from meiko.security.crypto import signing_secret
+
+            secret = signing_secret("linkshare-gate")
+        self.secret = secret
         self.links: dict[str, ProtectedLink] = {}
         self.approved: set[int] = set()
         self.pending: set[int] = set()
