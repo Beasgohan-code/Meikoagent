@@ -117,10 +117,21 @@ async def acquire_distributed(token: str, owner: str, ttl: int = 60) -> bool:
         return True
 
 
-def build_bot(token: str, extra_defaults: dict[str, Any] | None = None) -> Bot:
-    """Create an aiogram Bot with Meiko defaults."""
+def build_bot(
+    token: str,
+    extra_defaults: dict[str, Any] | None = None,
+    *,
+    timeout: float = 30.0,
+) -> Bot:
+    """Create an aiogram Bot with Meiko defaults.
+
+    ``timeout`` is exposed because an *interactive* call (verifying a token while
+    the user waits on a form) must not inherit the background retry budget: thirty
+    seconds per attempt with three attempts turns one unreachable Telegram into a
+    two-minute HTTP request.
+    """
     settings = get_settings()
-    session = AiohttpSession(timeout=30)
+    session = AiohttpSession(timeout=timeout)
     if settings.telegram_api_base and "api.telegram.org" not in settings.telegram_api_base:
         from aiogram.client.telegram import TelegramAPIServer
 
@@ -161,9 +172,13 @@ async def with_retry(
     raise last_error
 
 
-async def fetch_me(bot: Bot) -> dict[str, Any]:
-    """``getMe`` with retry – used for ownership verification."""
-    user = await with_retry(lambda: bot.get_me())
+async def fetch_me(bot: Bot, *, attempts: int = 3) -> dict[str, Any]:
+    """``getMe`` with retry – used for ownership verification.
+
+    A caller that is holding a user's HTTP request open should pass a small
+    ``attempts`` so the form fails fast and can retry under its own control.
+    """
+    user = await with_retry(lambda: bot.get_me(), attempts=attempts)
     return {
         "id": user.id,
         "username": user.username,

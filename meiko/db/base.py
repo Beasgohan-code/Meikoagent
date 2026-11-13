@@ -137,17 +137,86 @@ async def database_health() -> dict[str, Any]:
         return {"status": "error", "error": str(exc)}
 
 
+class SchemaMismatch(RuntimeError):
+    """The database is missing columns the models require."""
+
+
+def missing_schema_objects(connection: Any) -> list[str]:
+    """Tables and columns the models need but the database does not have.
+
+    ``Base.metadata.create_all`` creates missing *tables* and silently ignores
+    existing ones, so a deployment that upgrades against an existing database gets
+    a schema that is half old and half new: nothing fails at boot, and then every
+    query mentioning a new column returns 500.  This reports exactly what is
+    missing so startup can fail loudly, or so a developer can be told to migrate.
+    """
+    from sqlalchemy import inspect
+
+    inspector = inspect(connection)
+    present_tables = set(inspector.get_table_names())
+    problems: list[str] = []
+    for table_name, table in Base.metadata.tables.items():
+        if table_name not in present_tables:
+            problems.append(f"table {table_name}")
+            continue
+        actual = {column["name"] for column in inspector.get_columns(table_name)}
+        for column in table.columns:
+            if column.name not in actual:
+                problems.append(f"{table_name}.{column.name}")
+    return problems
+
+
 async def create_all() -> None:
-    """Create every table (used for SQLite dev + tests; Alembic in production).
+    """Create missing tables, then verify the schema the models actually need.
 
     With ``AUTO_CREATE_SCHEMA=false`` (containers) the schema is owned solely by
-    Alembic, so this becomes a no-op and startup never races the migrate service.
+    Alembic, so nothing is created here and startup never races the migrate
+    service — but the verification still runs, because a mismatch found at boot is
+    a five-second fix and a mismatch found as a 500 in production is not.
+
+    Creating a missing table is safe; adding a missing column is not, because only
+    Alembic knows how to backfill.  So this function never alters a table: it
+    creates what does not exist and raises :class:`SchemaMismatch` for the rest.
     """
     from meiko.config import get_settings
     from meiko.db import models  # noqa: F401  (register metadata)
 
-    if not get_settings().auto_create_schema:
-        return
+    settings = get_settings()
     engine = get_engine()
     async with engine.begin() as conn:
+        if settings.auto_create_schema:
+            await conn.run_sync(Base.metadata.create_all)
+        missing = await conn.run_sync(missing_schema_objects)
+
+    if not missing:
+        return
+
+    if settings.auto_create_schema and settings.database_url.startswith("sqlite"):
+        # The sandbox and test databases are disposable; reconcile them so a local
+        # checkout never carries a stale schema from an earlier revision.
+        await _rebuild_sqlite_schema()
+        return
+
+    raise SchemaMismatch(
+        "the database is missing "
+        + ", ".join(missing[:10])
+        + ("…" if len(missing) > 10 else "")
+        + "; run `python start.py --service migrate` (or `alembic upgrade head`) "
+        "before starting the API"
+    )
+
+
+async def _rebuild_sqlite_schema() -> None:
+    """Drop and recreate a disposable SQLite schema that no longer matches.
+
+    Only reachable with ``AUTO_CREATE_SCHEMA=1`` on SQLite — local development and
+    the sandbox.  It is deliberately not silent: the data loss is logged.
+    """
+    logger.warning(
+        "SQLite schema does not match the models and AUTO_CREATE_SCHEMA is on; "
+        "recreating it (local data will be lost)"
+    )
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)

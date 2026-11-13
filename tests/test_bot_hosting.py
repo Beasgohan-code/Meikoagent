@@ -366,3 +366,51 @@ class TestGracefulShutdown:
         attempted = set(result["started"]) | {item["bot_id"] for item in result["failed"]}
         assert run["id"] in attempted
         assert stop["id"] not in attempted
+
+
+class TestVerificationIsInteractive:
+    """Connecting a bot must fail fast, not inherit the background retry budget."""
+
+    async def test_verification_uses_a_short_single_attempt(self, monkeypatch):
+        from meiko.api.routers import bots as bots_module
+
+        seen: dict[str, object] = {}
+
+        class FakeClient:
+            class session:
+                @staticmethod
+                async def close():
+                    return None
+
+        def fake_build(token, extra_defaults=None, *, timeout=30.0):
+            seen["timeout"] = timeout
+            return FakeClient()
+
+        async def fake_fetch(client, *, attempts=3):
+            seen["attempts"] = attempts
+            raise RuntimeError("telegram unreachable")
+
+        class FakeService:
+            async def verify_identity(self, *args, **kwargs):
+                raise AssertionError("must not verify when the probe failed")
+
+        monkeypatch.setattr("meiko.telegram.client.build_bot", fake_build)
+        monkeypatch.setattr("meiko.telegram.client.fetch_me", fake_fetch)
+        monkeypatch.setattr(
+            "meiko.config.get_settings",
+            lambda: type("S", (), {"is_testing": False})(),
+        )
+
+        class FakeSession:
+            pass
+
+        class FakeBot:
+            last_error = ""
+            token_valid = True
+
+        bot = FakeBot()
+        await bots_module.verify_bot_token(FakeSession(), FakeService(), bot, "123:" + "a" * 30)
+        assert seen["attempts"] == 1
+        assert seen["timeout"] <= 10
+        assert bot.token_valid is False
+        assert "unreachable" in bot.last_error

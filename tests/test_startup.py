@@ -51,7 +51,12 @@ class TestSchemaOwnership:
         try:
             await base.dispose_engine()
             base.init_engine(get_settings())
-            await base.create_all()
+            # An Alembic-owned schema that has not been migrated yet is a schema
+            # mismatch, and startup refuses it rather than serving 500s later.
+            import pytest as _pytest
+
+            with _pytest.raises(base.SchemaMismatch):
+                await base.create_all()
             health = await base.database_health()
             assert health["status"] == "ok"
             # No tables were created by the app: Alembic owns them.

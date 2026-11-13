@@ -106,7 +106,25 @@ curl -s -X POST "$API/api/v1/auth/dev" -H 'content-type: application/json' \
   -d '{"telegram_id":1,"username":"smoke"}'
 ```
 
-## 5. What this deployment shape still cannot do
+## 5. Schema safety at startup
+
+`create_all()` creates missing *tables* and never alters existing ones, so a
+deployment that upgrades against an old database would otherwise boot "healthy" and
+then return 500 on every query that touches a new column. Startup now verifies the
+schema against the models:
+
+| situation | behaviour |
+| --- | --- |
+| schema matches | normal boot |
+| a table is missing, `AUTO_CREATE_SCHEMA=1` | the table is created |
+| a column is missing, `AUTO_CREATE_SCHEMA=0` (containers) | **boot fails** with `SchemaMismatch` naming the columns; run `--service migrate` first |
+| a column is missing, local SQLite with `AUTO_CREATE_SCHEMA=1` | the disposable local schema is recreated and the data loss is logged |
+
+That is why the documented order is *migrate, then start*: `python start.py
+--service migrate` (or `alembic upgrade head`) before the API, and
+`alembic check` should report no pending operations.
+
+## 6. What this deployment shape still cannot do
 
 * **No WebSocket through Next.** Use SSE, or expose the API directly.
 * **No bot runtime on Vercel.** Functions do not poll Telegram for a token.

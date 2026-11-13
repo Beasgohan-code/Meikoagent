@@ -158,6 +158,85 @@ class TestMigrationsReproduceTheModels:
         assert offenders == [], f"destructive upgrade detected: {offenders}"
 
 
+class TestBootDetectsAStaleSchema:
+    """`create_all` creates tables but never columns; startup must not miss that."""
+
+    async def test_a_missing_column_is_reported_before_it_becomes_a_500(self, tmp_path):
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from meiko.db.base import missing_schema_objects
+
+        url = f"sqlite+aiosqlite:///{(tmp_path / 'stale.db').as_posix()}"
+        engine = create_async_engine(url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            # An older revision of the same table, without the lease columns.
+            await conn.exec_driver_sql("CREATE TABLE bots_old (id INTEGER PRIMARY KEY)")
+            await conn.exec_driver_sql("DROP TABLE bots")
+            await conn.exec_driver_sql("ALTER TABLE bots_old RENAME TO bots")
+            missing = await conn.run_sync(missing_schema_objects)
+        await engine.dispose()
+        assert "bots.lease_owner" in missing
+        assert "bots.owner_id" in missing
+
+    async def test_a_complete_schema_reports_nothing(self, tmp_path):
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from meiko.db.base import missing_schema_objects
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{(tmp_path / 'fresh.db').as_posix()}"
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            assert await conn.run_sync(missing_schema_objects) == []
+        await engine.dispose()
+
+    async def test_startup_refuses_a_stale_schema_when_alembic_owns_it(self, monkeypatch):
+        """Production must fail loudly instead of serving 500s."""
+        import pytest as _pytest
+
+        from meiko.db import base as base_module
+
+        class FakeBegin:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def run_sync(self, fn):
+                return ["bots.lease_owner"]
+
+        class FakeEngine:
+            def begin(self):
+                return FakeBegin()
+
+        monkeypatch.setattr(base_module, "get_engine", lambda: FakeEngine())
+        settings = base_module.get_settings()
+        monkeypatch.setattr(settings, "auto_create_schema", False)
+        monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://x/y")
+        with _pytest.raises(base_module.SchemaMismatch) as excinfo:
+            await base_module.create_all()
+        assert "alembic upgrade head" in str(excinfo.value)
+
+    async def test_a_stale_sqlite_schema_is_rebuilt_not_ignored(self, monkeypatch, tmp_path):
+        from meiko.db.base import dispose_engine, init_engine
+        from meiko.config import Settings
+
+        settings = Settings()
+        object.__setattr__(settings, "database_url", f"sqlite+aiosqlite:///{(tmp_path/'x.db').as_posix()}")
+        object.__setattr__(settings, "auto_create_schema", True)
+        settings.__dict__["database_url"] = settings.database_url
+        monkeypatch.setattr("meiko.db.base.get_settings", lambda: settings)
+        await dispose_engine()
+        init_engine(settings)
+        from meiko.db import base as base_module
+
+        await base_module.create_all()
+        await dispose_engine()
+
+
 class TestPostgres:
     """The production dialect is PostgreSQL; SQLite-only tests are not enough."""
 

@@ -163,21 +163,41 @@ class TestOverrides:
         assert row["enabled"] is False
 
     async def test_override_cannot_repoint_a_handler(self, client):
-        """``handler_ref`` must be ignored: the webapp cannot choose code."""
+        """``handler_ref`` must be *refused*, not silently dropped.
+
+        Ignoring it answers 200 and leaves the client believing the command now runs
+        different code. A 422 says exactly what happened.
+        """
         token = await login(client, 6203)
         bot_id = await make_bot(client, token)
         name = await self._first_builtin(client, token, bot_id)
-        await client.put(
+        response = await client.put(
             f"/api/v1/bots/{bot_id}/commands/{name}/override",
             json={"description": "x", "handler_ref": "os.system"},
             headers=headers(token),
         )
+        assert response.status_code == 422
+        assert "handler" in response.text
         detail = (
             await client.get(
                 f"/api/v1/bots/{bot_id}/commands/{name}/override", headers=headers(token)
             )
         ).json()
-        assert "handler_ref" not in detail["override"] or detail["override"]["handler_ref"] != "os.system"
+        # Nothing was written by the refused request.
+        assert detail["override"] is None or not detail["override"].get("description") == "x"
+        assert "handler_ref" not in (detail["override"] or {})
+
+    async def test_override_still_accepts_legitimate_fields(self, client):
+        token = await login(client, 6207)
+        bot_id = await make_bot(client, token)
+        name = await self._first_builtin(client, token, bot_id)
+        response = await client.put(
+            f"/api/v1/bots/{bot_id}/commands/{name}/override",
+            json={"description": "House rules", "category": "custom", "enabled": True},
+            headers=headers(token),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["description"] == "House rules"
 
     async def test_override_rejects_alias_taken_by_another_command(self, client):
         token = await login(client, 6204)

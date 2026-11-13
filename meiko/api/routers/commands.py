@@ -316,7 +316,7 @@ async def sync_to_telegram(bot_id: int, auth: CurrentAuth, session: SessionDep) 
 # --------------------------------------------------------------------------- #
 # Per-bot overrides of builtin commands
 # --------------------------------------------------------------------------- #
-from pydantic import BaseModel, Field  # noqa: E402
+from pydantic import BaseModel, Field, model_validator  # noqa: E402
 
 
 class OverrideRequest(BaseModel):
@@ -333,6 +333,30 @@ class OverrideRequest(BaseModel):
     scope: str | None = None
     permission: str | None = None
     enabled: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_handler_changes(cls, values: Any) -> Any:
+        """Refuse handler fields loudly instead of dropping them silently.
+
+        A request that names ``handler_ref`` is asking for remote code selection.
+        The field is not part of this model, so pydantic would ignore it and answer
+        200 — a client would believe it had repointed the command. Saying so is the
+        only honest response.
+        """
+        if isinstance(values, dict):
+            forbidden = [
+                key
+                for key in ("handler_type", "handler_ref", "definition", "code")
+                if key in values
+            ]
+            if forbidden:
+                raise ValueError(
+                    "a command override cannot change its handler ("
+                    + ", ".join(forbidden)
+                    + "); the console describes and scopes commands, it never selects code"
+                )
+        return values
 
 
 @router.get("/{name}/override", response_model=dict)

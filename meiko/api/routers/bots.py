@@ -30,7 +30,9 @@ from meiko.services.core import (
 router = APIRouter(prefix="/bots", tags=["bots"])
 
 
-async def verify_bot_token(session, service: BotService, bot, token: str) -> None:
+async def verify_bot_token(
+    session, service: BotService, bot, token: str, *, interactive: bool = True
+) -> None:
     """Confirm the token with ``getMe``.
 
     Ownership is proven server-side: the Telegram bot id, username and name all
@@ -44,9 +46,12 @@ async def verify_bot_token(session, service: BotService, bot, token: str) -> Non
         bot.last_error = "telegram verification skipped in testing"
         bot.token_valid = False
         return
-    client = build_bot(token)
+    # This runs while the user waits on a form: one short attempt, not the
+    # background retry budget. Telegram being unreachable must not turn "connect a
+    # bot" into a two-minute request that also blocks the connection pool.
+    client = build_bot(token, timeout=10)
     try:
-        me = await fetch_me(client)
+        me = await fetch_me(client, attempts=1 if interactive else 3)
         await service.verify_identity(
             bot,
             telegram_bot_id=me["id"],
