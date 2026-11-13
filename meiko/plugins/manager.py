@@ -42,6 +42,91 @@ log = get_logger("plugins.manager")
 ACTIVE_STATES = {"running"}
 ENABLED_STATES = {"enabled", "configured", "running"}
 
+#: The vocabulary the API and the console use for "state of this plugin".
+#: ``running``/``stopped`` come from the runtime, the rest from the database row
+#: plus the approval and permission checks – never guessed from a timestamp.
+RUNTIME_STATUSES = (
+    "available",
+    "installed",
+    "approved",
+    "enabled",
+    "configured",
+    "running",
+    "stopped",
+    "failed",
+    "blocked",
+    "update_available",
+    "missing_dependency",
+    "missing_permission",
+    "missing_configuration",
+)
+
+
+def missing_permissions(plugin: Any) -> list[str]:
+    """Manifest permissions that are not part of the platform permission model.
+
+    A plugin cannot self-grant a permission at runtime, so a manifest that asks
+    for something the platform does not define can never run – that is a
+    ``blocked`` plugin, not a broken one.
+    """
+    from meiko.plugins.manifest import PERMISSIONS
+
+    declared = list(getattr(plugin, "permissions", None) or [])
+    return [permission for permission in declared if permission not in PERMISSIONS]
+
+
+def permission_changes(plugin: Any) -> list[str]:
+    """Permissions a newer manifest wants that the approved record never granted."""
+    manifest = dict(getattr(plugin, "manifest", None) or {})
+    approved = set(manifest.get("permissions") or [])
+    current = set(getattr(plugin, "permissions", None) or [])
+    return sorted(current - approved)
+
+
+def runtime_status(
+    *,
+    plugin: Any,
+    record: PluginInstallation | None,
+    live: bool,
+    bot_running: bool,
+    required_config: list[str] | None = None,
+    update_available: bool = False,
+) -> str:
+    """One authoritative status string for a (plugin, bot) pair.
+
+    Order matters – the first condition that applies is the honest answer:
+
+    * not installed anywhere -> ``available``
+    * the platform blocks it, or it asks for permissions it does not have ->
+      ``blocked`` / ``missing_permission``
+    * an update is pending -> ``update_available``
+    * the runtime says it is running -> ``running``
+    * it is meant to run but the manager has no instance ->
+      ``failed`` (bot running) or ``stopped`` (bot down)
+    * still missing required configuration -> ``missing_configuration``
+    """
+    if record is None:
+        return "available"
+    if str(getattr(plugin, "status", "approved")) in ("blocked", "pending", "rejected"):
+        return "blocked"
+    if missing_permissions(plugin):
+        return "missing_permission"
+    if update_available:
+        return "update_available"
+    if live:
+        return "running"
+    if record.state == "available":
+        return "available"
+    if record.state == "installed":
+        return "installed"
+    if record.state == "disabled":
+        return "stopped"
+    if required_config:
+        return "missing_configuration"
+    if record.state in ENABLED_STATES:
+        return "failed" if bot_running else "stopped"
+    return record.state
+
 
 class PluginLifecycleError(PluginError):
     """Lifecycle transition refused."""
@@ -112,10 +197,31 @@ class PluginManager:
     # -- scope resolution ------------------------------------------------
     @staticmethod
     def resolve_scope(
-        installs: Iterable[PluginInstallation], slug: str, bot_id: int | None, group_id: int | None
+        installs: Iterable[PluginInstallation],
+        slug: str,
+        bot_id: int | None,
+        group_id: int | None,
+        plugin_ids: "dict[str, int] | None" = None,
     ) -> PluginInstallation | None:
-        """Pick the most specific installation for (bot, group)."""
-        candidates = [i for i in installs if i.plugin_id is not None]
+        """Pick the most specific installation of ``slug`` for (bot, group).
+
+        Precedence is ``group -> bot -> global`` and the *first explicit state
+        wins*: a ``disabled`` group row overrides an ``enabled`` bot row, which is
+        what "disable it in this one chat" means.
+
+        ``plugin_ids`` maps slug -> plugin id.  Without it, rows cannot be told
+        apart: two plugins installed on the same bot are two rows with the same
+        ``bot_id``, and the caller would get whichever row came last.  Every
+        caller inside the platform passes the map; the parameter stays optional so
+        a single-plugin caller (and the tests) can omit it.
+        """
+        wanted_plugin_id = (plugin_ids or {}).get(slug)
+        candidates = [
+            install
+            for install in installs
+            if install.plugin_id is not None
+            and (wanted_plugin_id is None or install.plugin_id == wanted_plugin_id)
+        ]
         by_scope: dict[str, PluginInstallation] = {}
         for install in candidates:
             if install.group_id is not None:
@@ -305,6 +411,7 @@ class PluginManager:
         bot: Bot | None = None,
         dispatcher: Dispatcher | None = None,
         slugs: Iterable[str] | None = None,
+        plugin_ids: "dict[str, int] | None" = None,
     ) -> dict[str, str]:
         """Make the runtime match the database: start what should run, stop the rest.
 
@@ -316,7 +423,7 @@ class PluginManager:
         installs = list(installs)
         result: dict[str, str] = {}
         for slug in wanted:
-            install = self.resolve_scope(installs, slug, bot_id, group_id)
+            install = self.resolve_scope(installs, slug, bot_id, group_id, plugin_ids)
             if install is not None and install.state in ENABLED_STATES:
                 try:
                     await self.start(
@@ -338,7 +445,7 @@ class PluginManager:
         for key, rp in list(self._running.items()):
             if rp.scope.key != scope.key:
                 continue
-            install = self.resolve_scope(installs, rp.slug, bot_id, group_id)
+            install = self.resolve_scope(installs, rp.slug, bot_id, group_id, plugin_ids)
             if install is None or install.state not in ENABLED_STATES:
                 await self.stop(rp.slug, scope, installation=install, dispatcher=dispatcher)
                 result[rp.slug] = "stopped"

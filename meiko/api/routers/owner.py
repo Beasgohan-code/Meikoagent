@@ -310,3 +310,146 @@ async def set_capability(
         },
     )
     return {"capability": capability, **CAPABILITIES[capability], **state.to_dict()}
+
+
+# ------------------------------------------------------- global plugin scope
+# Global installations are platform-wide: they apply to every bot unless that bot
+# has its own row.  They are therefore an owner capability, with their own
+# endpoints so the ordinary marketplace client never needs a global code path.
+@router.get("/plugins/global", response_model=list[dict])
+async def global_installations(auth: OwnerAuth, session: SessionDep) -> list[dict[str, Any]]:
+    """Every global-scope installation, with its live runtime state."""
+    from meiko.db.models import Plugin
+    from meiko.plugins.manager import runtime_status
+    from meiko.runtime.manager import get_worker_manager
+
+    from meiko.plugins.context import PluginScope
+
+    rows = (
+        await session.scalars(
+            select(PluginInstallation).where(PluginInstallation.bot_id.is_(None))
+        )
+    ).all()
+    catalogue = {plugin.id: plugin for plugin in (await session.scalars(select(Plugin))).all()}
+    manager = get_worker_manager()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        plugin = catalogue.get(row.plugin_id)
+        live = any(
+            application.plugins is not None
+            and plugin is not None
+            and application.plugins.is_running(plugin.slug, PluginScope(bot_id=bot_id))
+            for bot_id, application in manager.state.applications.items()
+        )
+        out.append(
+            {
+                "id": row.id,
+                "slug": plugin.slug if plugin else None,
+                "name": plugin.name if plugin else None,
+                "state": row.state,
+                "version": row.version,
+                "scope": row.scope,
+                "config": row.config or {},
+                "running_somewhere": live,
+                "status": runtime_status(
+                    plugin=plugin,
+                    record=row,
+                    live=live,
+                    bot_running=bool(manager.state.applications),
+                )
+                if plugin
+                else "blocked",
+            }
+        )
+    return out
+
+
+@router.post("/plugins/global/{slug}/reconcile", response_model=dict)
+async def reconcile_global_plugin(slug: str, auth: OwnerAuth, session: SessionDep) -> dict[str, Any]:
+    """Re-apply a global plugin to every running bot, right now.
+
+    "Global changes apply on next start" was the old behaviour and it silently
+    left running bots on stale plugin sets.  This reconciles them immediately and
+    reports per-bot results, including the bots it could not touch.
+    """
+    from meiko.db.models import Plugin
+    from meiko.runtime.manager import get_worker_manager
+
+    plugin = await session.scalar(select(Plugin).where(Plugin.slug == slug))
+    if plugin is None:
+        raise error(404, "not_found", "plugin not found")
+    manager = get_worker_manager()
+    results: dict[str, Any] = {}
+    for bot_id, application in list(manager.state.applications.items()):
+        if application.plugins is None:
+            results[str(bot_id)] = {"applied": False, "reason": "plugins not loaded"}
+            continue
+        results[str(bot_id)] = {"applied": True, "states": await application.load_plugins()}
+    await AuditService(session).log(
+        "owner.plugin_global_reconciled",
+        actor_user_id=auth.user.id,
+        target_type="plugin",
+        target_id=slug,
+        metadata={"bots": list(results), "applied": sum(
+            1 for value in results.values() if value.get("applied")
+        )},
+    )
+    return {
+        "slug": slug,
+        "bots": results,
+        "applied": sum(1 for value in results.values() if value.get("applied")),
+        "skipped": sum(1 for value in results.values() if not value.get("applied")),
+    }
+
+
+@router.get("/plugins/overview", response_model=dict)
+async def plugin_overview(auth: OwnerAuth, session: SessionDep) -> dict[str, Any]:
+    """Owner-facing plugin inventory: catalogue, approvals, activations, failures."""
+    from meiko.db.models import Plugin
+    from meiko.plugins.base import registry as plugin_registry
+    from meiko.plugins.manager import missing_permissions, permission_changes, runtime_status
+
+    plugins = (await session.scalars(select(Plugin).order_by(Plugin.slug))).all()
+    installs = (await session.scalars(select(PluginInstallation))).all()
+    by_plugin: dict[int, list[PluginInstallation]] = {}
+    for row in installs:
+        by_plugin.setdefault(row.plugin_id, []).append(row)
+    implemented = set(plugin_registry.slugs())
+    rows: list[dict[str, Any]] = []
+    for plugin in plugins:
+        rows_of = by_plugin.get(plugin.id, [])
+        rows.append(
+            {
+                "slug": plugin.slug,
+                "name": plugin.name,
+                "version": plugin.version,
+                "category": plugin.category,
+                "status": plugin.status,
+                "implemented": plugin.slug in implemented,
+                "permissions": list(plugin.permissions or []),
+                "missing_permissions": missing_permissions(plugin),
+                "pending_permission_changes": permission_changes(plugin),
+                "dependencies": list(plugin.dependencies or []),
+                "installations": {
+                    "global": sum(1 for r in rows_of if r.bot_id is None),
+                    "bot": sum(1 for r in rows_of if r.bot_id is not None and r.group_id is None),
+                    "group": sum(1 for r in rows_of if r.group_id is not None),
+                },
+                "states": {
+                    state: sum(1 for r in rows_of if r.state == state)
+                    for state in sorted({r.state for r in rows_of})
+                },
+            }
+        )
+    return {
+        "plugins": rows,
+        "totals": {
+            "catalogue": len(plugins),
+            "implemented": sum(1 for r in rows if r["implemented"]),
+            "approved": sum(1 for r in plugins if r.status == "approved"),
+            "blocked": sum(1 for r in plugins if r.status == "blocked"),
+            "pending": sum(1 for r in plugins if r.status == "pending"),
+            "installations": len(installs),
+            "global_installations": sum(1 for r in installs if r.bot_id is None),
+        },
+    }

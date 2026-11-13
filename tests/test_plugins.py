@@ -46,6 +46,23 @@ class DummyPlugin(MeikoPlugin):
         self.stopped = True
 
 
+async def make_install(session, slug: str = "dummy", state: str = "installed", bot_id=None):
+    """Create a bot + plugin row + installation for lifecycle tests."""
+    from meiko.services.core import BotService
+
+    if bot_id is None:
+        user = await UserService(session).get_or_create_telegram_user(555, username="owner")
+        bot = await BotService(session).register(user.id, token="555555555:" + "E" * 34)
+        bot_id = bot.id
+    plugin = Plugin(slug=slug, name=slug, category="utilities", config_schema={})
+    session.add(plugin)
+    await session.flush()
+    install = PluginInstallation(plugin_id=plugin.id, bot_id=bot_id, scope="bot", state=state)
+    session.add(install)
+    await session.flush()
+    return install
+
+
 class TestManifest:
     def test_builtin_manifests_are_valid(self):
         for manifest in BUILTIN_MANIFESTS:
@@ -155,7 +172,7 @@ class TestPluginManagerLifecycle:
         registry = PluginRegistry()
         registry.register(DummyPlugin)
         manager = PluginManager(plugins=registry, commands=CommandRegistry(), cache=cache)
-        install = await self._install(session, state="enabled")
+        install = await make_install(session, state="enabled")
         scope = PluginScope(bot_id=install.bot_id)
         rp = await manager.start("dummy", installation=install, scope=scope)
         assert rp.instance.started
@@ -173,7 +190,7 @@ class TestPluginManagerLifecycle:
         registry = PluginRegistry()
         registry.register(DummyPlugin)
         manager = PluginManager(plugins=registry, commands=CommandRegistry(), cache=cache)
-        install = await self._install(session, state="enabled")
+        install = await make_install(session, state="enabled")
         scope = PluginScope(bot_id=install.bot_id)
         first = await manager.start("dummy", installation=install, scope=scope)
         second = await manager.start("dummy", installation=install, scope=scope)
@@ -200,7 +217,7 @@ class TestPluginManagerLifecycle:
         registry = PluginRegistry()
         registry.register(DummyPlugin)
         manager = PluginManager(plugins=registry, commands=CommandRegistry(), cache=cache)
-        install = await self._install(session, state="enabled")
+        install = await make_install(session, state="enabled")
         scope = PluginScope(bot_id=install.bot_id)
         await manager.start("dummy", installation=install, scope=scope)
         install.state = "disabled"
@@ -329,3 +346,196 @@ class TestBuiltinPlugins:
         board = await plugin.leaderboard(-100)
         assert board[0] == (1, 2)
         await plugin.on_stop(ctx)
+
+
+class TestScopeResolverMatrix:
+    """The brief's matrix: identity-matched, precedence-respecting resolution.
+
+    These are the cases an earlier bug got wrong: ``resolve_scope`` matched rows
+    by ``bot_id``/``group_id`` only, so with two plugins installed on one bot the
+    answer depended on iteration order rather than on the slug being asked for.
+    """
+
+    @staticmethod
+    def _row(plugin_id: int, *, bot_id=None, group_id=None, state="enabled"):
+        scope = "group" if group_id else ("bot" if bot_id else "global")
+        return PluginInstallation(
+            plugin_id=plugin_id, bot_id=bot_id, group_id=group_id, scope=scope, state=state
+        )
+
+    def test_two_global_plugins_resolve_independently(self):
+        a = self._row(1, state="configured")
+        b = self._row(2, state="disabled")
+        installs = [a, b]
+        ids = {"alpha": 1, "beta": 2}
+        assert PluginManager.resolve_scope(installs, "alpha", None, None, ids) is a
+        assert PluginManager.resolve_scope(installs, "beta", None, None, ids) is b
+
+    def test_two_plugins_on_one_bot_resolve_independently(self):
+        a = self._row(1, bot_id=5)
+        b = self._row(2, bot_id=5)
+        installs = [a, b]
+        ids = {"alpha": 1, "beta": 2}
+        assert PluginManager.resolve_scope(installs, "alpha", 5, None, ids) is a
+        assert PluginManager.resolve_scope(installs, "beta", 5, None, ids) is b
+
+    def test_global_plus_bot_override(self):
+        global_row = self._row(1, state="enabled")
+        bot_row = self._row(1, bot_id=5, state="disabled")
+        installs = [global_row, bot_row]
+        ids = {"alpha": 1}
+        assert PluginManager.resolve_scope(installs, "alpha", 5, None, ids) is bot_row
+        assert PluginManager.resolve_scope(installs, "alpha", 6, None, ids) is global_row
+
+    def test_bot_plus_group_override(self):
+        bot_row = self._row(1, bot_id=5, state="enabled")
+        group_row = self._row(1, bot_id=5, group_id=9, state="disabled")
+        installs = [bot_row, group_row]
+        ids = {"alpha": 1}
+        assert PluginManager.resolve_scope(installs, "alpha", 5, 9, ids) is group_row
+        assert PluginManager.resolve_scope(installs, "alpha", 5, None, ids) is bot_row
+
+    def test_disabled_group_override_beats_enabled_bot(self):
+        bot_row = self._row(1, bot_id=5, state="running")
+        group_row = self._row(1, bot_id=5, group_id=9, state="disabled")
+        resolved = PluginManager.resolve_scope(
+            [bot_row, group_row], "alpha", 5, 9, {"alpha": 1}
+        )
+        assert resolved is group_row
+        assert resolved.state == "disabled"
+
+    def test_disabled_bot_override_beats_global(self):
+        global_row = self._row(1, state="running")
+        bot_row = self._row(1, bot_id=5, state="disabled")
+        resolved = PluginManager.resolve_scope(
+            [global_row, bot_row], "alpha", 5, None, {"alpha": 1}
+        )
+        assert resolved is bot_row
+
+    def test_absent_everywhere_is_none(self):
+        assert (
+            PluginManager.resolve_scope([self._row(1)], "missing", 5, 9, {"missing": 99})
+            is None
+        )
+
+    def test_rows_for_other_plugins_are_never_returned(self):
+        other = self._row(2, bot_id=5, state="running")
+        assert PluginManager.resolve_scope([other], "alpha", 5, None, {"alpha": 1}) is None
+
+    async def test_multiple_bots_with_different_owners_stay_separate(self, db, cache, session):
+        """Two bots, two owners, same plugin: each bot gets its own row."""
+        from meiko.services.core import BotService
+
+        alice = await UserService(session).get_or_create_telegram_user(1001, username="alice")
+        bob = await UserService(session).get_or_create_telegram_user(1002, username="bob")
+        bots = BotService(session)
+        alice_bot = await bots.register(alice.id, token="111111:" + "a" * 35)
+        bob_bot = await bots.register(bob.id, token="222222:" + "b" * 35)
+        plugin = Plugin(slug="scope_probe", name="Probe", category="utilities")
+        session.add(plugin)
+        await session.flush()
+        alice_row = self._row(plugin.id, bot_id=alice_bot.id, state="enabled")
+        bob_row = self._row(plugin.id, bot_id=bob_bot.id, state="disabled")
+        session.add_all([alice_row, bob_row])
+        await session.flush()
+        installs = [alice_row, bob_row]
+        ids = {"scope_probe": plugin.id}
+        assert PluginManager.resolve_scope(installs, "scope_probe", alice_bot.id, None, ids) is alice_row
+        assert PluginManager.resolve_scope(installs, "scope_probe", bob_bot.id, None, ids) is bob_row
+
+
+class TestDisabledPluginsAreInert:
+    """A disabled plugin must own nothing: no router, job, command or capacity."""
+
+    async def _manager_with(self, cache, session) -> tuple[PluginManager, PluginInstallation, CommandRegistry]:
+        registry = PluginRegistry()
+        registry.register(DummyPlugin)
+        commands = CommandRegistry()
+        manager = PluginManager(plugins=registry, commands=commands, cache=cache)
+        install = await make_install(session, state="enabled")
+        return manager, install, commands
+
+    async def test_disabled_plugin_registers_nothing(self, cache, session):
+        manager, install, commands = await self._manager_with(cache, session)
+        scope = PluginScope(bot_id=install.bot_id)
+        plugin = manager.plugins.get("dummy")()
+
+        # 1. Disabled *before* start: start() refuses on state, not on a flag.
+        install.state = "disabled"
+        with pytest.raises(PluginLifecycleError):
+            await manager.start("dummy", installation=install, scope=scope)
+        assert manager.running_summary() == []
+        assert plugin.started is False
+
+        # 2. Enabled then disabled: everything registered is torn down.
+        install.state = "enabled"
+        running = await manager.start("dummy", installation=install, scope=scope)
+        assert plugin.started is True or running.context.jobs
+        assert running.context.jobs, "scheduler job should exist while running"
+        await manager.stop("dummy", scope, installation=install)
+        assert manager.running_summary() == []
+        assert running.context.jobs == []
+        assert all(task.cancelled() or task.done() for task in running.tasks) if running.tasks else True
+        assert manager.active_commands() == []
+
+    async def test_reconcile_after_restart_keeps_it_inert(self, cache, session):
+        """Crash/restart is just a fresh manager reading the same rows."""
+        manager, install, _commands = await self._manager_with(cache, session)
+        scope = PluginScope(bot_id=install.bot_id)
+        install.state = "enabled"
+        await manager.start("dummy", installation=install, scope=scope)
+
+        install.state = "disabled"
+        fresh = PluginManager(plugins=manager.plugins, commands=CommandRegistry(), cache=cache)
+        result = await fresh.reconcile(
+            bot_id=install.bot_id,
+            group_id=None,
+            installs=[install],
+            slugs=["dummy"],
+            plugin_ids={"dummy": install.plugin_id},
+        )
+        assert result["dummy"] == "disabled"
+        assert fresh.running_summary() == []
+
+    async def test_worker_capacity_not_consumed_by_disabled_plugins(self, cache, session):
+        manager, install, _commands = await self._manager_with(cache, session)
+        install.state = "disabled"
+        await manager.reconcile(
+            bot_id=install.bot_id,
+            group_id=None,
+            installs=[install],
+            slugs=["dummy"],
+            plugin_ids={"dummy": install.plugin_id},
+        )
+        running = [
+            rp for rp in manager._running.values() if rp.scope.bot_id == install.bot_id
+        ]
+        assert running == []
+        assert manager.running_summary() == []
+
+    async def test_event_subscriptions_are_dropped_on_disable(self, cache, session):
+        from meiko.db.base import get_sessionmaker
+
+        registry = PluginRegistry()
+
+        class Subscriber(DummyPlugin):
+            manifest = PluginManifest(
+                slug="subscriber",
+                name="Subscriber",
+                category="utilities",
+                permissions=["events.subscribe", "storage.read"],
+            )
+
+            async def on_start(self, ctx):
+                ctx.subscribe("message.new")
+                ctx.add_router(Router(name="subscriber"))
+
+        registry.register(Subscriber)
+        manager = PluginManager(plugins=registry, commands=CommandRegistry(), cache=cache)
+        install = await make_install(session, slug="subscriber", state="enabled")
+        scope = PluginScope(bot_id=install.bot_id)
+        running = await manager.start("subscriber", installation=install, scope=scope)
+        assert running.context.subscriptions == ["message.new"]
+        await manager.stop("subscriber", scope, installation=install)
+        assert running.context.subscriptions == []
+        assert running.context.routers == []

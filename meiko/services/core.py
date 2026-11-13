@@ -764,10 +764,24 @@ class PluginService:
         )
 
     async def installations_for_bot(self, bot_id: int) -> Sequence[PluginInstallation]:
+        """Bot-scope rows plus the group rows and global rows that apply to it.
+
+        A bot's effective plugin set is not one column: a plugin installed
+        globally applies unless the bot overrides it, and a group row overrides
+        both inside that group.  Callers that reconcile the runtime need all
+        three sets, so this returns them together and lets
+        :meth:`PluginManager.resolve_scope` decide precedence.
+        """
         return list(
             (
                 await self.session.scalars(
-                    select(PluginInstallation).where(PluginInstallation.bot_id == bot_id)
+                    select(PluginInstallation)
+                    .outerjoin(BotGroup, PluginInstallation.group_id == BotGroup.id)
+                    .where(
+                        (PluginInstallation.bot_id == bot_id)
+                        | (PluginInstallation.bot_id.is_(None))
+                        | (BotGroup.bot_id == bot_id)
+                    )
                 )
             ).all()
         )

@@ -121,12 +121,17 @@ class BotApplication:
             snapshot = list(installs)
             for install in snapshot:
                 session.expunge(install)
+            plugin_ids = {
+                plugin.slug: plugin.id
+                for plugin in (await PluginService(session).catalog())
+            }
         result = await self.plugins.reconcile(
             bot_id=self.bot_id,
             group_id=None,
             installs=snapshot,
             bot=self.bot,
             dispatcher=self.dispatcher,
+            plugin_ids=plugin_ids,
         )
         log.info("bot %s plugin state: %s", self.bot_id, result)
         return result

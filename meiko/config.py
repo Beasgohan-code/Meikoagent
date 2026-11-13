@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     watchdog_interval_seconds: int = 30
     rate_limit_per_minute: int = 120
 
+    # ---------------------------------------------------------------- plugins
+    #: Global-scope plugin installations are a platform-owner capability.  The
+    #: flag exists so an owner can switch the capability off completely (e.g. on
+    #: a single-tenant deployment) without editing code; it never *grants*
+    #: anything to a non-owner.
+    plugin_global_scope_enabled: bool = True
+
     # ------------------------------------------------------------ derived ----
     @field_validator("data_dir", mode="before")
     @classmethod
