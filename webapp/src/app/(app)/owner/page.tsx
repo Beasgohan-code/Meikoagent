@@ -1,7 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import {
   Bot,
   Crown,
@@ -15,7 +16,7 @@ import type { CapabilityState, User } from "@/lib/types";
 import { Badge, Card, EmptyState, ErrorNote, SectionHeader, Skeleton, Stat, Toggle } from "@/components/ui";
 import { SearchInput, Tabs } from "@/components/patterns";
 
-type Tab = "overview" | "users" | "bots" | "capabilities" | "audit" | "security";
+type Tab = "overview" | "users" | "bots" | "plugins" | "capabilities" | "audit" | "security";
 
 type OwnerOverview = {
   users: number;
@@ -52,8 +53,53 @@ type AuditRow = {
 
 type SecurityEvent = { id: number; action: string; actor_user_id: number | null; ip_address: string | null; created_at: string };
 
+type GlobalInstallation = {
+  id: number;
+  slug: string | null;
+  name: string | null;
+  state: string;
+  status: string;
+  version: string;
+  running_somewhere: boolean;
+  config: Record<string, unknown>;
+};
+
+type PluginOverviewRow = {
+  slug: string;
+  name: string;
+  version: string;
+  category: string;
+  status: string;
+  implemented: boolean;
+  permissions: string[];
+  missing_permissions: string[];
+  pending_permission_changes: string[];
+  dependencies: string[];
+  installations: { global: number; bot: number; group: number };
+  states: Record<string, number>;
+};
+
+type PluginOverview = {
+  plugins: PluginOverviewRow[];
+  totals: Record<string, number>;
+};
+
+const TABS: Tab[] = ["overview", "users", "bots", "plugins", "capabilities", "audit", "security"];
+
 export default function OwnerPage() {
-  const [tab, setTab] = useState<Tab>("overview");
+  return (
+    <Suspense fallback={<Skeleton className="h-64" />}>
+      <OwnerContent />
+    </Suspense>
+  );
+}
+
+function OwnerContent() {
+  // The sidebar deep-links sections with ?tab=…; an unknown value falls back to
+  // Overview rather than rendering nothing.
+  const params = useSearchParams();
+  const requested = params.get("tab") as Tab | null;
+  const [tab, setTab] = useState<Tab>(requested && TABS.includes(requested) ? requested : "overview");
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -65,6 +111,37 @@ export default function OwnerPage() {
     queryKey: ["owner-security"],
     queryFn: () => api.get<SecurityEvent[]>("/owner/security-events"),
     enabled: tab === "security",
+  });
+
+  const pluginOverview = useQuery({
+    queryKey: ["owner-plugin-overview"],
+    queryFn: () => api.get<PluginOverview>("/owner/plugins/overview"),
+    enabled: tab === "plugins",
+  });
+  const globalPlugins = useQuery({
+    queryKey: ["owner-global-plugins"],
+    queryFn: () => api.get<GlobalInstallation[]>("/owner/plugins/global"),
+    enabled: tab === "plugins",
+  });
+
+  const reconcileGlobal = useMutation({
+    mutationFn: (slug: string) => api.post(`/owner/plugins/global/${slug}/reconcile`),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["owner-global-plugins"] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const setPluginStatus = useMutation({
+    mutationFn: ({ slug, action }: { slug: string; action: "approve" | "block" }) =>
+      api.post(`/owner/plugins/${slug}/${action}`),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["owner-plugin-overview"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner-audit"] });
+    },
+    onError: (err: Error) => setError(err.message),
   });
 
   const capabilities = useQuery({
@@ -133,6 +210,7 @@ export default function OwnerPage() {
           { id: "overview" as Tab, label: "Overview" },
           { id: "users" as Tab, label: "Users" },
           { id: "bots" as Tab, label: "All bots" },
+          { id: "plugins" as Tab, label: "Plugins", count: pluginOverview.data?.totals.catalogue },
           { id: "capabilities" as Tab, label: "Capabilities" },
           { id: "audit" as Tab, label: "Audit log" },
           { id: "security" as Tab, label: "Security" },
@@ -322,6 +400,150 @@ export default function OwnerPage() {
         ) : (
           <EmptyState title="Audit log empty" description="Every privileged mutation is recorded here." />
         )
+      ) : null}
+
+      {tab === "plugins" ? (
+        <div className="space-y-4">
+          <Card className="border-amber-500/25 bg-amber-500/[0.04]">
+            <p className="text-sm font-medium text-amber-100">Global scope is yours alone</p>
+            <p className="mt-1 text-xs text-amber-100/70">
+              A global installation applies to every bot unless that bot has its own row. The API rejects global
+              installs from anyone but a platform owner, so this screen is the only place they can be managed.
+              Reconciling pushes the current state to running bots immediately instead of waiting for a restart.
+            </p>
+          </Card>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <Stat label="Catalogue" value={pluginOverview.data?.totals.catalogue ?? "…"} />
+            <Stat label="Implemented" value={pluginOverview.data?.totals.implemented ?? "…"} hint="runtime code present" />
+            <Stat label="Global installs" value={pluginOverview.data?.totals.global_installations ?? "…"} />
+            <Stat label="Blocked" value={pluginOverview.data?.totals.blocked ?? "…"} hint={`${pluginOverview.data?.totals.pending ?? 0} pending`} />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <p className="text-sm font-medium text-white">Global activations</p>
+              {globalPlugins.isLoading ? (
+                <Skeleton className="mt-3 h-24" />
+              ) : globalPlugins.data?.length ? (
+                <ul className="mt-3 space-y-2">
+                  {globalPlugins.data.map((row) => (
+                    <li
+                      key={row.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] px-3 py-2"
+                    >
+                      <div>
+                        <p className="text-sm text-slate-100">{row.name ?? row.slug}</p>
+                        <p className="mt-0.5 font-mono text-[11px] text-slate-500">
+                          v{row.version} · {row.state} · {row.running_somewhere ? "live on some bots" : "not loaded"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge status={row.status}>{row.status}</Badge>
+                        <button
+                          className="btn-ghost px-2 py-1 text-xs"
+                          onClick={() => row.slug && reconcileGlobal.mutate(row.slug)}
+                          disabled={!row.slug || reconcileGlobal.isPending}
+                          title="Reconcile this plugin on every running bot"
+                        >
+                          Reconcile
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-sm text-slate-500">
+                  No global installations. Owners can install globally from the marketplace API
+                  (<span className="kbd">POST /plugins/&#123;slug&#125;/install</span> with no bot id).
+                </p>
+              )}
+            </Card>
+
+            <Card>
+              <p className="text-sm text-white">Pending permission changes</p>
+              <p className="mt-1 text-xs text-slate-500">
+                A plugin cannot grant itself a permission at runtime. When a manifest asks for more than the
+                approved record, it shows up here for review.
+              </p>
+              <ul className="mt-3 space-y-1.5">
+                {(pluginOverview.data?.plugins ?? [])
+                  .filter((plugin) => plugin.pending_permission_changes.length || plugin.missing_permissions.length)
+                  .map((plugin) => (
+                    <li key={plugin.slug} className="rounded-lg border border-amber-500/20 px-3 py-2 text-xs">
+                      <span className="text-slate-200">{plugin.name}</span>{" "}
+                      <span className="text-amber-200">
+                        +{(plugin.pending_permission_changes.length ? plugin.pending_permission_changes : plugin.missing_permissions).join(", ")}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+              {!(pluginOverview.data?.plugins ?? []).some(
+                (plugin) => plugin.pending_permission_changes.length || plugin.missing_permissions.length,
+              ) ? (
+                <p className="mt-3 text-sm text-slate-500">Every installed manifest matches its approved permissions.</p>
+              ) : null}
+            </Card>
+          </div>
+
+          <Card className="p-0">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Plugin</th>
+                  <th>Status</th>
+                  <th>Runtime</th>
+                  <th>Installations</th>
+                  <th>Permissions</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {(pluginOverview.data?.plugins ?? []).map((plugin) => (
+                  <tr key={plugin.slug}>
+                    <td>
+                      <p className="text-sm text-slate-100">{plugin.name}</p>
+                      <p className="font-mono text-[11px] text-slate-500">
+                        {plugin.slug} · v{plugin.version} · {plugin.category}
+                      </p>
+                    </td>
+                    <td>
+                      <Badge status={plugin.status}>{plugin.status}</Badge>
+                    </td>
+                    <td className="text-xs text-slate-400">
+                      {plugin.implemented ? "implemented" : "no implementation"}
+                    </td>
+                    <td className="font-mono text-xs text-slate-400">
+                      G{plugin.installations.global} · B{plugin.installations.bot} · Gr
+                      {plugin.installations.group}
+                    </td>
+                    <td className="text-xs text-slate-400">
+                      {plugin.permissions.length ? plugin.permissions.join(", ") : "none"}
+                    </td>
+                    <td>
+                      <div className="flex justify-end gap-1">
+                        <button
+                          className="btn-ghost px-2 py-1 text-xs"
+                          onClick={() => setPluginStatus.mutate({ slug: plugin.slug, action: "approve" })}
+                          disabled={plugin.status === "approved"}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="btn-danger px-2 py-1 text-xs"
+                          onClick={() => setPluginStatus.mutate({ slug: plugin.slug, action: "block" })}
+                          disabled={plugin.status === "blocked"}
+                        >
+                          Block
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        </div>
       ) : null}
 
       {tab === "capabilities" ? (

@@ -28,6 +28,11 @@ export default function PluginDetailPage() {
 
   const plugin = useQuery({ queryKey: ["plugin", slug], queryFn: () => api.get<PluginDetail>(`/plugins/${slug}`) });
   const bots = useQuery({ queryKey: ["bots"], queryFn: () => api.get<Page<Bot>>("/bots") });
+  const botList = bots.data?.items ?? [];
+  // Global scope is a platform-owner capability, so the ordinary marketplace
+  // never offers it: an installation always has a bot. Installations that apply
+  // to every bot are managed from the Owner Control Center instead.
+  const needsBot = !botId;
   const installed = useQuery({
     queryKey: ["plugins-installed", botId],
     queryFn: () => api.get<PluginInstallation[]>(`/plugins/installed${botId ? `?bot_id=${botId}` : ""}`),
@@ -36,7 +41,10 @@ export default function PluginDetailPage() {
   const installation = (installed.data ?? []).find((row) => row.plugin_id === plugin.data?.id);
 
   const install = useMutation({
-    mutationFn: () => api.post<PluginInstallation>(`/plugins/${slug}/install`, { bot_id: botId ? Number(botId) : null }),
+    mutationFn: () => {
+      if (!botId) throw new Error("Choose the bot this plugin should run on first.");
+      return api.post<PluginInstallation>(`/plugins/${slug}/install`, { bot_id: Number(botId) });
+    },
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["plugins-installed"] });
@@ -103,9 +111,14 @@ export default function PluginDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <select className="input max-w-[220px]" value={botId} onChange={(event) => setBotId(event.target.value)}>
-            <option value="">Global scope</option>
-            {(bots.data?.items ?? []).map((bot) => (
+          <select
+            className="input max-w-[220px]"
+            value={botId}
+            onChange={(event) => setBotId(event.target.value)}
+            aria-label="Bot to install this plugin on"
+          >
+            <option value="">Select a bot…</option>
+            {botList.map((bot) => (
               <option key={bot.id} value={String(bot.id)}>
                 {bot.name}
               </option>
@@ -119,7 +132,12 @@ export default function PluginDetailPage() {
               {["enabled", "configured", "running"].includes(installation.state) ? "Disable" : "Enable"}
             </button>
           ) : (
-            <button className="btn-primary" onClick={() => install.mutate()} disabled={install.isPending || !record.installable}>
+            <button
+              className="btn-primary"
+              onClick={() => install.mutate()}
+              disabled={install.isPending || !record.installable || needsBot}
+              title={needsBot ? "Pick a bot first" : undefined}
+            >
               <Download className="h-4 w-4" /> Install
             </button>
           )}

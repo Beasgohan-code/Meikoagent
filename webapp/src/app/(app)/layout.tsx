@@ -46,6 +46,18 @@ import { cn, initials } from "@/lib/utils";
 type NavItem = { href: string; label: string; icon: React.ElementType; badge?: string };
 type NavGroup = { title: string; items: NavItem[] };
 
+/** Owner Control Center sections. The links carry a tab query; the API is the
+ *  authority, so a non-owner who types the URL still gets a 403. */
+const OWNER_NAV: { href: string; label: string; icon: React.ElementType }[] = [
+  { href: "/owner", label: "Overview", icon: Crown },
+  { href: "/owner?tab=users", label: "Users", icon: Users },
+  { href: "/owner?tab=bots", label: "Bots", icon: Bot },
+  { href: "/owner?tab=plugins", label: "Plugins & global scope", icon: Boxes },
+  { href: "/owner?tab=capabilities", label: "Capabilities", icon: Sliders },
+  { href: "/owner?tab=audit", label: "Audit history", icon: Activity },
+  { href: "/owner?tab=security", label: "Security", icon: Shield },
+];
+
 const NAV: NavGroup[] = [
   {
     title: "Overview",
@@ -235,15 +247,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       {user.is_owner ? (
         <div>
           <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600">
-            Platform
+            Owner Control Center
           </p>
-          <Link
-            href="/owner"
-            className={cn("nav-link", pathname === "/owner" && "nav-link-active")}
-          >
-            <Crown className="h-4 w-4 text-amber-300" />
-            <span className="flex-1">Owner Center</span>
-          </Link>
+          {OWNER_NAV.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cn("nav-link", pathname === "/owner" && "nav-link-active")}
+            >
+              <item.icon className="h-4 w-4 text-amber-300" />
+              <span className="flex-1">{item.label}</span>
+            </Link>
+          ))}
         </div>
       ) : null}
     </nav>

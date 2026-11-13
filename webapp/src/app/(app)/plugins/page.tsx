@@ -58,8 +58,10 @@ function PluginsContent() {
   };
 
   const install = useMutation({
-    mutationFn: ({ slug, targetBot }: { slug: string; targetBot: number | null }) =>
-      api.post(`/plugins/${slug}/install`, { bot_id: targetBot }),
+    mutationFn: ({ slug, targetBot }: { slug: string; targetBot: number | null }) => {
+      if (targetBot === null) throw new Error("Choose the bot this plugin should run on first.");
+      return api.post(`/plugins/${slug}/install`, { bot_id: targetBot });
+    },
     onSuccess: () => {
       setTarget(null);
       setError(null);
@@ -251,7 +253,7 @@ function PluginsContent() {
         ) : (
           <EmptyState
             title="Nothing installed yet"
-            description="Install a plugin into a bot or globally; the lifecycle goes AVAILABLE → INSTALLED → ENABLED → CONFIGURED → RUNNING."
+            description="Install a plugin into one of your bots; the lifecycle goes AVAILABLE → INSTALLED → ENABLED → CONFIGURED → RUNNING."
             icon={<Boxes className="h-6 w-6" />}
             action={
               <button className="btn-primary" onClick={() => setTab("marketplace")}>
@@ -276,7 +278,8 @@ function PluginsContent() {
             <button
               className="btn-primary"
               onClick={() => target && install.mutate({ slug: target.slug, targetBot: botId ? Number(botId) : null })}
-              disabled={install.isPending}
+              disabled={install.isPending || !botId}
+              title={botId ? undefined : "Pick a bot first"}
             >
               <Play className="h-4 w-4" /> Install
             </button>
@@ -284,14 +287,14 @@ function PluginsContent() {
         }
       >
         <p className="text-sm text-slate-300">
-          The plugin will be installed {botId ? `into bot ${botId}` : "globally"}. After installation you can enable it
-          and fill its configuration; enabling without required config is rejected with{" "}
+          The plugin will be installed into {botId ? `bot ${botId}` : "the bot you pick below"}. After installation
+          you can enable it and fill its configuration; enabling without required config is rejected with{" "}
           <span className="kbd">config_required</span>.
         </p>
         <div className="mt-3">
           <label className="label">Target bot</label>
           <select className="input" value={botId} onChange={(event) => setBotId(event.target.value)}>
-            <option value="">Global (applies to every bot)</option>
+            <option value="">Select a bot…</option>
             {(bots.data?.items ?? []).map((bot) => (
               <option key={bot.id} value={bot.id}>
                 {bot.name}
@@ -320,8 +323,10 @@ function PluginSwitches({ botId, onError }: { botId: string; onError: (message: 
   });
 
   const flip = useMutation({
-    mutationFn: ({ slug, enabled }: { slug: string; enabled: boolean }) =>
-      api.post(`/plugins/${slug}/toggle?enabled=${enabled}${botId ? `&bot_id=${botId}` : ""}`),
+    mutationFn: ({ slug, enabled }: { slug: string; enabled: boolean }) => {
+      if (!botId) throw new Error("Pick a bot first — plugins are enabled per bot.");
+      return api.post(`/plugins/${slug}/toggle?enabled=${enabled}&bot_id=${botId}`);
+    },
     onMutate: ({ slug }) => setPending(slug),
     onSuccess: () => {
       onError(null);
@@ -339,6 +344,14 @@ function PluginSwitches({ botId, onError }: { botId: string; onError: (message: 
     return acc;
   }, {});
 
+  if (!botId) {
+    return (
+      <EmptyState
+        title="Pick a bot to manage its plugins"
+        description="Plugins are enabled per bot. Platform-wide activation is an owner capability and lives in the Owner Control Center."
+      />
+    );
+  }
   if (toggles.isLoading) return <Skeleton className="h-64" />;
   if (!rows.length) {
     return <EmptyState title="No toggleable plugins" description="Builtin plugin packages appear here once registered." />;
@@ -352,11 +365,11 @@ function PluginSwitches({ botId, onError }: { botId: string; onError: (message: 
             {on} of {rows.length} plugins enabled
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            Flipping a switch installs the plugin into {botId ? `bot ${botId}` : "global scope"} if needed, then
-            enables or disables it — no restart required.
+            Flipping a switch installs the plugin into bot {botId} if needed, then enables or disables it — the
+            bot is reconciled immediately when it is running.
           </p>
         </div>
-        <Badge status={on ? "running" : "available"}>{botId ? `bot ${botId}` : "global"}</Badge>
+        <Badge status={on ? "running" : "available"}>{`bot ${botId}`}</Badge>
       </Card>
 
       {Object.entries(grouped).map(([category, plugins]) => (
