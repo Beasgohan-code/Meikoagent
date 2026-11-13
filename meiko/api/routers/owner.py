@@ -453,3 +453,310 @@ async def plugin_overview(auth: OwnerAuth, session: SessionDep) -> dict[str, Any
             "global_installations": sum(1 for r in installs if r.bot_id is None),
         },
     }
+
+
+# --------------------------------------------------------------- marketplace
+# Everything below is the import/review pipeline.  Note what is *not* here: no
+# endpoint installs from a URL, runs a hook or executes imported code.  Importing
+# stores findings; approving stores a decision; only the ordinary install path
+# activates anything, and only for an approved + published version.
+@router.get("/marketplace/overview", response_model=dict)
+async def marketplace_overview(auth: OwnerAuth, session: SessionDep) -> dict[str, Any]:
+    from meiko.services.marketplace import MarketplaceService
+
+    service = MarketplaceService(session)
+    summary = await service.summary()
+    packages = await service.list_packages()
+    versions = {}
+    for package in packages:
+        latest = await service.latest_version(package.id)
+        versions[package.slug] = (
+            {
+                "version": latest.version,
+                "approval": latest.approval,
+                "published": latest.published,
+                "commit": latest.commit_sha[:12],
+                "licence": latest.licence,
+            }
+            if latest
+            else None
+        )
+    return {
+        "summary": summary,
+        "packages": [
+            {
+                "id": package.id,
+                "slug": package.slug,
+                "name": package.name,
+                "state": package.state,
+                "blocked_reason": package.blocked_reason,
+                "source_id": package.source_id,
+                "latest": versions.get(package.slug),
+            }
+            for package in packages
+        ],
+        "sources": [
+            {
+                "id": source.id,
+                "name": source.name,
+                "url": source.url,
+                "ref": source.ref,
+                "licence": source.license,
+                "licence_ok": source.license_ok,
+                "trust": source.trust,
+                "enabled": source.enabled,
+            }
+            for source in await service.list_sources()
+        ],
+    }
+
+
+@router.post("/marketplace/sources", response_model=dict, status_code=201)
+async def add_source(
+    auth: OwnerAuth,
+    session: SessionDep,
+    name: str = "",
+    url: str = "",
+    ref: str = "main",
+    license: str = "",
+) -> dict[str, Any]:
+    """Register a source repository. Only an owner can name a URL at all."""
+    from meiko.services.marketplace import MarketplaceError, MarketplaceService
+
+    try:
+        source = await MarketplaceService(session).add_source(
+            name=name, url=url, ref=ref, license=license, added_by=auth.user.id
+        )
+    except MarketplaceError as exc:
+        raise error(422, "invalid_source", str(exc)) from exc
+    except ValueError as exc:
+        raise error(422, "invalid_source", str(exc)) from exc
+    await AuditService(session).log(
+        "owner.marketplace_source_added",
+        actor_user_id=auth.user.id,
+        target_type="plugin_source",
+        target_id=source.id,
+        metadata={"url": source.url, "ref": source.ref},
+    )
+    return {"id": source.id, "name": source.name, "url": source.url, "ref": source.ref}
+
+
+@router.post("/marketplace/sources/{source_id}/import", response_model=dict)
+async def import_source(
+    source_id: int,
+    auth: OwnerAuth,
+    session: SessionDep,
+    path: str = "",
+) -> dict[str, Any]:
+    """Inspect a *local checkout* of a registered source and record the findings.
+
+    The clone itself is an operator action (``deploy/import-plugin.sh`` or a CI
+    job) because this process must never fetch and execute third-party code.  This
+    endpoint only reads the directory it is pointed at: it lists files, parses one
+    manifest, checks the licence and scans statically.  Nothing is imported,
+    executed or installed here.
+    """
+    from pathlib import Path
+
+    from meiko.config import get_settings
+    from meiko.plugins.marketplace import inspect_directory
+    from meiko.services.marketplace import MarketplaceError, MarketplaceService
+
+    service = MarketplaceService(session)
+    source = await service.get_source(source_id)
+    root_dir = Path(get_settings().data_dir) / "plugin_sources" / str(source.id)
+    if not root_dir.is_dir():
+        raise error(
+            404,
+            "checkout_missing",
+            f"no checkout at {root_dir}; clone the source there first (the API does not run git fetch)",
+        )
+    root = root_dir / path if path else root_dir
+    try:
+        resolved = root.resolve()
+        if not str(resolved).startswith(str(root_dir.resolve())):
+            raise error(422, "invalid_path", "path escapes the source checkout")
+    except OSError as exc:  # pragma: no cover - filesystem dependent
+        raise error(422, "invalid_path", str(exc)) from exc
+
+    inspection = inspect_directory(resolved, platform_version="1.0.0")
+    if not inspection.commit:
+        from meiko.plugins.marketplace import resolve_commit
+
+        try:
+            inspection.commit = resolve_commit(resolved, source.ref)
+        except ValueError as exc:
+            inspection.add("error", "commit.unresolved", str(exc))
+    try:
+        package, version = await service.import_inspection(
+            source_id=source.id, inspection=inspection, path=path
+        )
+    except MarketplaceError as exc:
+        raise error(422, "import_failed", str(exc)) from exc
+    await AuditService(session).log(
+        "owner.marketplace_imported",
+        actor_user_id=auth.user.id,
+        target_type="plugin_package",
+        target_id=package.slug,
+        metadata={
+            "source_id": source.id,
+            "commit": inspection.commit,
+            "findings": len(inspection.findings),
+            "blocked": inspection.blocked,
+            "state": package.state,
+        },
+    )
+    return {
+        "package": {"id": package.id, "slug": package.slug, "state": package.state},
+        "version": {
+            "id": version.id,
+            "version": version.version,
+            "approval": version.approval,
+            "commit": version.commit_sha,
+        },
+        "inspection": inspection.to_dict(),
+    }
+
+
+@router.get("/marketplace/packages/{slug}", response_model=dict)
+async def package_detail(slug: str, auth: OwnerAuth, session: SessionDep) -> dict[str, Any]:
+    from sqlalchemy import select as _select
+
+    from meiko.db.models import PluginPackage, PluginVersion
+    from meiko.services.marketplace import MarketplaceService
+
+    service = MarketplaceService(session)
+    package = await session.scalar(_select(PluginPackage).where(PluginPackage.slug == slug))
+    if package is None:
+        raise error(404, "not_found", "package not found")
+    versions = (
+        await session.scalars(
+            _select(PluginVersion)
+            .where(PluginVersion.package_id == package.id)
+            .order_by(PluginVersion.id.desc())
+        )
+    ).all()
+    return {
+        "id": package.id,
+        "slug": package.slug,
+        "name": package.name,
+        "state": package.state,
+        "blocked_reason": package.blocked_reason,
+        "review_notes": package.review_notes,
+        "source_id": package.source_id,
+        "versions": [
+            {
+                "id": version.id,
+                "version": version.version,
+                "approval": version.approval,
+                "published": version.published,
+                "commit": version.commit_sha,
+                "checksum": version.checksum,
+                "licence": version.licence,
+                "inspection": version.inspection,
+            }
+            for version in versions
+        ],
+        "installable": await service.installable_version(slug) is not None,
+    }
+
+
+@router.post("/marketplace/packages/{slug}/approve", response_model=dict)
+async def approve_package(
+    slug: str,
+    auth: OwnerAuth,
+    session: SessionDep,
+    version_id: int | None = None,
+    publish: bool = True,
+    notes: str = "",
+) -> dict[str, Any]:
+    """Approve one pinned version for installation. Separate from execution."""
+    from sqlalchemy import select as _select
+
+    from meiko.db.models import PluginPackage, PluginVersion
+    from meiko.services.marketplace import MarketplaceError, MarketplaceService
+
+    service = MarketplaceService(session)
+    package = await session.scalar(_select(PluginPackage).where(PluginPackage.slug == slug))
+    if package is None:
+        raise error(404, "not_found", "package not found")
+    if version_id is not None:
+        version = await session.get(PluginVersion, version_id)
+        if version is None or version.package_id != package.id:
+            raise error(404, "not_found", "version not found")
+    else:
+        version = await service.latest_version(package.id)
+        if version is None:
+            raise error(404, "not_found", "this package has no imported version")
+    inspection = dict(version.inspection or {})
+    if not inspection.get("ok"):
+        raise error(
+            422,
+            "inspection_blocked",
+            "the inspection did not pass; fix the findings or record an override first",
+        )
+    try:
+        version = await service.approve_version(
+            version, actor_user_id=auth.user.id, publish=publish
+        )
+        package.review_notes = notes[:2000]
+        package = await service.transition_package(
+            package, "approved", actor_user_id=auth.user.id
+        )
+    except MarketplaceError as exc:
+        raise error(422, "approval_failed", str(exc)) from exc
+    await AuditService(session).log(
+        "owner.marketplace_approved",
+        actor_user_id=auth.user.id,
+        target_type="plugin_package",
+        target_id=slug,
+        metadata={"version": version.version, "commit": version.commit_sha, "published": publish},
+    )
+    return {
+        "slug": slug,
+        "package_state": package.state,
+        "version": version.version,
+        "approval": version.approval,
+        "published": version.published,
+    }
+
+
+@router.post("/marketplace/packages/{slug}/reject", response_model=dict)
+async def reject_package(
+    slug: str,
+    auth: OwnerAuth,
+    session: SessionDep,
+    version_id: int | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    from sqlalchemy import select as _select
+
+    from meiko.db.models import PluginPackage, PluginVersion
+    from meiko.services.marketplace import MarketplaceError, MarketplaceService
+
+    service = MarketplaceService(session)
+    package = await session.scalar(_select(PluginPackage).where(PluginPackage.slug == slug))
+    if package is None:
+        raise error(404, "not_found", "package not found")
+    version = (
+        await session.get(PluginVersion, version_id)
+        if version_id is not None
+        else await service.latest_version(package.id)
+    )
+    if version is None:
+        raise error(404, "not_found", "version not found")
+    try:
+        version = await service.reject_version(
+            version, actor_user_id=auth.user.id, reason=reason
+        )
+    except MarketplaceError as exc:
+        raise error(422, "rejection_failed", str(exc)) from exc
+    await AuditService(session).log(
+        "owner.marketplace_rejected",
+        actor_user_id=auth.user.id,
+        target_type="plugin_package",
+        target_id=slug,
+        metadata={"version": version.version, "reason": reason[:200]},
+    )
+    return {"slug": slug, "version": version.version, "approval": version.approval,
+            "package_state": package.state}

@@ -441,3 +441,84 @@ retention + permission checks; encoder probe/preset/encode-plan/validation +
 safe cancel; filestore register/ownership/link/independent settings; linkshare
 generate/validate/revoke/access; leech authorized transfer/progress/cancel/retry;
 platform disable-module → no handlers/jobs, tenant isolation, quotas.
+
+---
+
+## 12. Plugin marketplace: sources, packages, approvals
+
+The marketplace is not one `status` column. An operator has to be able to answer
+"which source, at which commit, did the owner approve, and which bots are still on
+the old version?" — so the lifecycle is spread over four tables and each step is a
+separate action.
+
+| concept | table | what it means |
+| --- | --- | --- |
+| source | `plugin_sources` | an owner-registered git repository (`url`, pinned `ref`, licence, trust) |
+| package | `plugin_packages` | one plugin identity found in a source, plus its review state |
+| version | `plugin_versions` | one pinned `commit_sha` + checksum + inspection report + approval |
+| installation | `plugin_installations` | one bot/group/global activation of an approved version |
+| approval | `plugin_versions.approval` | `pending → approved / rejected`; separate from `published` |
+| platform install | `plugin_packages.state` | `available → review_pending → approved → platform_installed` |
+| activation | `plugin_installations.state` | `installed → enabled → configured → running` (`running` from the runtime) |
+| runtime | `PluginManager._running` | the only source of truth for "is it running right now" |
+
+### 12.1 The import pipeline
+
+`meiko/plugins/marketplace.py` implements it. Every step fails closed, and each one
+records a finding the owner sees instead of a generic error:
+
+1. **URL validation** — `meiko/modules/urls.py`: http/https only, no credentials, no
+   private/loopback/link-local hosts, no raw private IPs, and only well-known git
+   hosts. `file:///etc/passwd` and `169.254.169.254` are refused, and those two
+   refusals are tests.
+2. **Pinned reference** — the ref is normalised (no `--upload-pack=…`, no `..`) and
+   resolved to a 40-character commit with a fixed-argv `git rev-parse` against a
+   checkout the operator already made. A version without a commit **cannot be
+   approved**.
+3. **Repository inspection** — a static file listing with limits (400 files,
+   512 KiB per scanned file). Nothing is imported, no hook runs.
+4. **Licence review** — a licence file must exist; the allowlist is MIT, Apache-2.0,
+   BSD-2/3-Clause, ISC, MPL-2.0, Unlicense. GPL/AGPL produce an `error` unless the
+   owner records an explicit override — because importing copyleft code would
+   relicense this repository.
+5. **Manifest validation** — the typed manifest from `meiko/plugins/manifest.py`
+   (slug, version, category, permissions, dependencies, config schema, resources,
+   compatibility).
+6. **Dependency + static security scan** — declared dependencies must be in
+   `DEPENDENCY_ALLOWLIST`; the source is scanned for `os.system`, `subprocess`,
+   `eval`/`exec`, `ctypes`, `pickle.loads`, hard-coded credentials, system paths,
+   base64 payloads and long byte escapes. Findings carry severity
+   (`info`/`warning`/`error`/`critical`) and a code such as `scan.rce`.
+7. **Isolated build/test** — intentionally *not implemented in-process*. The platform
+   does not compile or run imported code; that step needs a separate worker/container
+   with CPU/memory/time limits, which is where it belongs, and a subprocess on its
+   own is explicitly **not** presented as a sandbox here.
+8. **Owner review** — `POST /owner/marketplace/packages/{slug}/approve|reject`.
+   Approval refuses any version whose inspection is not `ok`.
+9. **Platform install / publication** — `published` is set at approval time; the
+   ordinary install path refuses a marketplace plugin that has no approved, published
+   version.
+10. **Bot activation** — the normal scoped install (`bot`/`group`, `OwnerAuth` for
+    global), unchanged by where the package came from.
+
+### 12.2 What an imported package can never do
+
+* declare a permission outside `meiko.plugins.manifest.PERMISSIONS` (fails validation)
+* grant itself a permission at runtime (`PluginContext.require` checks the granted set;
+  `permission_changes()` surfaces a manifest that asks for more than was approved)
+* ship an install hook that runs (`setup.py`/`pyproject.toml`/`Makefile`/`Dockerfile`
+  are flagged, never executed — a test writes a marker file into `setup.py` and asserts
+  the marker does not appear)
+* be installed by a non-owner: source registration, import, approval and global
+  activation are all `OwnerAuth`, and every one of them writes an audit row
+
+### 12.3 Honest limits
+
+* The **clone is an operator step**: the API inspects a checkout under
+  `$DATA_DIR/plugin_sources/<id>` and says `checkout_missing` when it is not there. It
+  deliberately does not `git fetch` or `pip install`.
+* Isolated execution of untrusted packages is **not** implemented; the review gate is
+  the control, not a container.
+* Two manifest files at the same depth are refused rather than guessed.
+* Python packages cannot be installed from arbitrary indexes; the dependency check is
+  an allowlist, not a resolver.

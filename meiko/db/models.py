@@ -396,6 +396,82 @@ class PluginLog(Base):
 
 
 # --------------------------------------------------------------------------- #
+# Marketplace: source -> package -> version -> approval -> install -> activation
+# --------------------------------------------------------------------------- #
+# These are deliberately *four* tables plus the existing installation row.  One
+# "plugin" column could not express "the owner approved v1.2 at commit abc123
+# from this source, but the bot is still running v1.1", which is the question an
+# operator actually asks.  Nothing here executes code: a source is a record, a
+# package is a manifest, a version is an identified artefact.
+class PluginSource(TimestampMixin, Base):
+    """An owner-registered git repository the marketplace may import from."""
+
+    __tablename__ = "plugin_sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    url: Mapped[str] = mapped_column(String(512), unique=True)
+    kind: Mapped[str] = mapped_column(String(20), default="git")  # git | local
+    #: Branch/tag the owner pinned.  A commit is resolved at import time and
+    #: stored on the version row: "latest" is never re-resolved implicitly.
+    ref: Mapped[str] = mapped_column(String(120), default="main")
+    license: Mapped[str] = mapped_column(String(64), default="")
+    license_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    trust: Mapped[str] = mapped_column(String(20), default="untrusted")  # trusted | untrusted
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    added_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PluginPackage(TimestampMixin, Base):
+    """A plugin identity discovered inside a source (slug + manifest path)."""
+
+    __tablename__ = "plugin_packages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("plugin_sources.id", ondelete="CASCADE"), index=True
+    )
+    slug: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    path: Mapped[str] = mapped_column(String(256), default="")
+    entrypoint: Mapped[str] = mapped_column(String(256), default="")
+    #: AVAILABLE -> REVIEW_PENDING -> APPROVED -> PLATFORM_INSTALLED -> REMOVED
+    state: Mapped[str] = mapped_column(String(24), default="available", index=True)
+    blocked_reason: Mapped[str] = mapped_column(Text, default="")
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    review_notes: Mapped[str] = mapped_column(Text, default="")
+
+
+class PluginVersion(TimestampMixin, Base):
+    """One pinned, checksummed artefact of a package."""
+
+    __tablename__ = "plugin_versions"
+    __table_args__ = (UniqueConstraint("package_id", "version", name="uq_package_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    package_id: Mapped[int] = mapped_column(
+        ForeignKey("plugin_packages.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[str] = mapped_column(String(32))
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    checksum: Mapped[str] = mapped_column(String(128), default="")
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: pending | approved | rejected | withdrawn
+    approval: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    rejection_reason: Mapped[str] = mapped_column(Text, default="")
+    #: Findings from the inspection pipeline, kept verbatim for the audit trail.
+    inspection: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    licence: Mapped[str] = mapped_column(String(64), default="")
+    #: A version may only be installed as a platform package once this is true.
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# --------------------------------------------------------------------------- #
 # Commands, automation, scheduling
 # --------------------------------------------------------------------------- #
 class BotCommandRecord(TimestampMixin, Base):

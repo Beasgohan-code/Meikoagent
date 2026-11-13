@@ -491,12 +491,15 @@ async def install(
     grant = await require_scope(
         auth, session, bot_id=payload.bot_id, group_id=payload.group_id
     )
+    plugin_row = await session.scalar(select(Plugin).where(Plugin.slug == slug))
+    marketplace = bool(plugin_row and plugin_row.source not in (None, "", "builtin"))
     try:
         record = await PluginService(session).install(
             slug,
             bot_id=payload.bot_id,
             group_id=payload.group_id,
             user_id=auth.user.id,
+            require_approved_version=marketplace,
         )
     except (NotFound, ValidationError) as exc:
         raise error(400, "install_failed", str(exc)) from exc

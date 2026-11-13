@@ -812,11 +812,24 @@ class PluginService:
         return missing
 
     async def install(
-        self, slug: str, *, bot_id: int | None, user_id: int | None, group_id: int | None = None
+        self, slug: str, *, bot_id: int | None, user_id: int | None, group_id: int | None = None,
+        require_approved_version: bool = False,
     ) -> PluginInstallation:
         plugin = await self.get_plugin(slug)
         if plugin.status != "approved":
             raise ValidationError(f"plugin {slug} is not approved for installation")
+        if require_approved_version:
+            # A marketplace package must have an owner-approved, published,
+            # pinned version before any bot may run it.  Approval is stored on the
+            # version row, not inferred from the plugin record.
+            from meiko.services.marketplace import MarketplaceService
+
+            version = await MarketplaceService(self.session).installable_version(slug)
+            if version is None:
+                raise ValidationError(
+                    f"plugin {slug} has no approved, published version; "
+                    "the platform owner must approve it before installation"
+                )
         existing = await self.installation(slug, bot_id, group_id)
         if existing:
             return existing

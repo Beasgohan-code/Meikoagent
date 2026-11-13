@@ -23,7 +23,7 @@ plane, the plugin manager is the extension system and the database is the single
 | Plugins | `meiko/plugins` | typed manifests, lifecycle states, scope resolution (`group → bot → global`), tenant-isolated execution, 18 built-in plugin **packages** |
 | Runtime | `meiko/runtime` | worker manager (capacity, heartbeats, crash-loop protection, recovery), scheduler (cron + retries), watchdog (dead-runtime detection) |
 | API | `meiko/api` | FastAPI v1 control plane, bearer sessions + API keys, owner-scoped tenancy, SSE activity stream |
-| Data | `meiko/db`, `migrations` | SQLAlchemy 2 async models (29 tables), Alembic migrations, PostgreSQL primary / SQLite fallback |
+| Data | `meiko/db`, `migrations` | SQLAlchemy 2 async models (32 tables), Alembic migrations, PostgreSQL primary / SQLite fallback |
 | UI engine | `meiko/ui` | RichMessage blocks, premium emoji (`Beasgohan-code/Videl0`), buttons/styles, widgets, plain-text fallback |
 | Webapp | `webapp` | Next.js 15 console: dashboard, bots, moderation, marketplace, automation, developer, infrastructure, account, owner |
 
@@ -269,7 +269,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 849 tests
+python -m pytest -q          # 882 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -282,6 +282,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
+| `tests/test_plugin_marketplace.py` | source URL policy, static import inspection (never executes setup.py/hooks), licence + dependency allowlists, owner review → approve → install gate |
 | `tests/test_plugin_authz.py` | the three plugin authorization levels: global scope is owner-only, another tenant's installation is a 404, group scope needs the owning bot, `/plugins/effective` reports runtime state |
 | `tests/test_plugin_packages.py` | package layout, saver links/captions, renamer engine, ID3 writer, post templates, heartbeat, sandbox, toggles + capabilities, command publication, durable state |
 | `tests/test_plugin_routing.py` | real `Dispatcher` + real `Update`s: every package answers only its own commands |
