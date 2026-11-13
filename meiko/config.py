@@ -54,6 +54,8 @@ class Settings(BaseSettings):
 
     # -------------------------------------------------------------- database
     database_url: str = ""
+    #: Direct (non-pooled) URL for Alembic; empty = reuse ``database_url``.
+    migration_url: str = ""
     db_echo: bool = False
     db_pool_size: int = 10
     db_max_overflow: int = 20
@@ -122,6 +124,16 @@ class Settings(BaseSettings):
             return self.database_url
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return f"sqlite+aiosqlite:///{(self.data_dir / 'meiko.db').as_posix()}"
+
+    @property
+    def migration_database_url(self) -> str:
+        """The URL Alembic should use.
+
+        A Pooled connection (Supabase's pgbouncer, port 6543, transaction mode)
+        cannot run multi-statement DDL reliably, so migrations take a direct URL
+        when one is configured and fall back to the app URL otherwise.
+        """
+        return self.migration_url or self.resolved_database_url
 
     @property
     def cors_origin_list(self) -> list[str]:

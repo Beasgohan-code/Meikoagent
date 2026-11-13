@@ -171,6 +171,7 @@ Six modules sit on one shared infrastructure layer instead of inventing their ow
   fake encode. Unconfigured transfer adapters report `available() == false`; link analytics say exactly
   what Telegram can and cannot report.
 - Full audit of the six reference repositories, licences, refusals and gaps: **[docs/MODULES.md](docs/MODULES.md)**.
+- Deploying it — Compose, a single container, or a Vercel console against a Supabase database: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ### Runtime model
 
@@ -268,7 +269,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 805 tests
+python -m pytest -q          # 808 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 

@@ -296,3 +296,28 @@ def make_settings(monkeypatch, **overrides):
     # module attribute is enough — and leaves the real loader untouched.
     monkeypatch.setattr("meiko.config.get_settings", lambda: settings)
     return settings
+
+
+class TestMigrationUrl:
+    """A pooled connection cannot run DDL, so Alembic takes the direct URL."""
+
+    def test_without_an_override_alembic_reuses_the_app_url(self, monkeypatch):
+        monkeypatch.delenv("MIGRATION_URL", raising=False)
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@pooler:6543/db")
+        from meiko.config import Settings
+
+        settings = Settings()
+        assert settings.migration_database_url == "postgresql+asyncpg://u:p@pooler:6543/db"
+
+    def test_an_override_is_used_verbatim(self, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@pooler:6543/db")
+        monkeypatch.setenv("MIGRATION_URL", "postgresql+asyncpg://u:p@db:5432/db")
+        from meiko.config import Settings
+
+        assert Settings().migration_database_url == "postgresql+asyncpg://u:p@db:5432/db"
+
+    def test_the_alembic_env_reads_it(self):
+        """Guard against the doc and migrations/env.py drifting apart."""
+        source = open("migrations/env.py").read()
+        assert "settings.migration_database_url" in source
+        assert "resolved_database_url" not in source
