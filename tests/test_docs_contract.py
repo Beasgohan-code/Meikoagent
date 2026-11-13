@@ -7,6 +7,7 @@ every upstream source, and the counts quoted in the README are the real counts.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -156,3 +157,55 @@ class TestDocsAreNotDuplicated:
         body = (DOCS / "DEPLOYMENT.md").read_text().lower()
         for service in ("postgres", "redis", "watchdog"):
             assert service in body
+
+
+class TestWebDependenciesStayPatched:
+    """Vercel refused to deploy this app: 'Vulnerable version of Next.js detected'.
+
+    The build itself succeeded, so nothing in CI caught it — only the platform's
+    deploy-time gate did.  The pin is part of the contract: the web app is a
+    production surface and must not ship a framework version with a known
+    advisory.
+    """
+
+    #: First patched releases for the advisories that blocked the deploy
+    #: (CVE-2025-66478 for Next.js, GHSA-* for postcss).
+    MINIMUM_NEXT = (15, 5, 29)
+    MINIMUM_POSTCSS = (8, 5, 23)
+
+    @staticmethod
+    def _version(text: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+
+    def test_next_is_patched(self):
+        manifest = (ROOT / "webapp/package.json").read_text()
+        pinned = re.search(r'"next":\s*"([\d.]+)"', manifest)
+        assert pinned, "next is not pinned to an exact version"
+        assert self._version(pinned.group(1)) >= self.MINIMUM_NEXT, (
+            f"next {pinned.group(1)} has a known advisory; need "
+            f"{'.'.join(map(str, self.MINIMUM_NEXT))} or newer"
+        )
+
+    def test_postcss_is_patched_at_every_depth(self):
+        manifest = (ROOT / "webapp/package.json").read_text()
+        pinned = re.search(r'"postcss":\s*"\^?([\d.]+)"', manifest)
+        assert pinned
+        assert self._version(pinned.group(1)) >= self.MINIMUM_POSTCSS
+        lock = (ROOT / "webapp/package-lock.json").read_text()
+        for version in re.findall(r'"node_modules/(?:[^"]*/)?postcss":\s*\{[^}]*"version":\s*"([\d.]+)"', lock):
+            assert self._version(version) >= self.MINIMUM_POSTCSS, (
+                f"postcss {version} is still installed by a transitive dependency"
+            )
+
+    def test_the_manifest_has_no_unused_security_pinned_dependency(self):
+        """`zod` was declared but imported nowhere; unused deps are unpatched attack surface."""
+        manifest = (ROOT / "webapp/package.json").read_text()
+        declared = set(json.loads(manifest).get("dependencies", {}))
+        sources = "\n".join(
+            path.read_text(errors="ignore")
+            for path in (ROOT / "webapp/src").rglob("*.ts*")
+        )
+        for name in declared:
+            assert f'"{name}"' in sources or f"'{name}'" in sources or name in ("next", "react", "react-dom"), (
+                f"{name} is a runtime dependency but nothing imports it"
+            )

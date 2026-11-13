@@ -106,6 +106,20 @@ curl -s -X POST "$API/api/v1/auth/dev" -H 'content-type: application/json' \
   -d '{"telegram_id":1,"username":"smoke"}'
 ```
 
+### 5.1 Web dependencies
+
+Vercel gates deployment on dependency advisories: the build can succeed and the
+deployment still be rejected ("Vulnerable version of Next.js detected"), which is
+how this repository found out that its `next` pin was stale. Two rules follow:
+
+* `next` is pinned to an exact, patched version in `webapp/package.json`; bump it
+  deliberately and run `npx next build` in the same change.
+* `postcss` is overridden to a patched version at every depth, because Next.js
+  bundles its own copy that the top-level version does not cover.
+
+`tests/test_docs_contract.py::TestWebDependenciesStayPatched` enforces both from
+the lockfile, so a stale pin fails the suite instead of only failing a deploy.
+
 ## 5. Schema safety at startup
 
 `create_all()` creates missing *tables* and never alters existing ones, so a
