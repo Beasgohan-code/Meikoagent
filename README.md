@@ -231,7 +231,9 @@ Bot API 10.4 widgets are handled by a typed adapter, and `allowed_updates` inclu
 | Concern | Guarantee |
 | --- | --- |
 | Identity | Telegram login widget HMAC or Mini App `init_data` signature, verified server-side |
-| Sessions | Bearer token, only its hash is stored, expiry + revocation enforced per request |
+| Sessions | httpOnly `SameSite=lax` cookie for browsers (plus a bearer token for API/Mini App clients), only the token hash is stored, expiry + revocation enforced per request |
+| Cross-site writes | Unsafe methods are refused when the browser reports an untrusted `Origin`/`Referer`; API clients without those headers are unaffected |
+| Bot leasing | A bot is claimed by one worker (database lease + cache claim, renewed on heartbeat) so two processes can never long-poll one token |
 | Roles | Read from the database row, never from a request body or header |
 | Tenancy | Every bot/group/plugin query is scoped by `owner_id`; foreign resources return `404` |
 | Secrets | Bot tokens sealed with Fernet; API keys stored hashed; tokens never serialised to the browser |
@@ -244,7 +246,8 @@ Bot API 10.4 widgets are handled by a typed adapter, and `allowed_updates` inclu
 
 ## API
 
-Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 121 documented paths,
+Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 146 documented paths
+(164 operations),
 including the media-module surface (`/music`, `/encoder`, `/saver`, `/filestore`, `/linkshare`, `/leech`,
 `/platform`) — see `docs/MODULES.md` §7.
 
@@ -269,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 982 tests
+python -m pytest -q          # 1001 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -282,6 +285,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
+| `tests/test_docs_contract.py` | the README's test/table/path counts match the code, the upstream table pins every repository + licence, no row claims a copy |
 | `tests/test_schema_migrations.py` | migrations reproduce the models (columns + indexes), downgrade/reapply, no destructive upgrade, BIGINT for Telegram ids, optional live PostgreSQL run |
 | `tests/test_plugin_schema.py` | install history, permission grant/revoke with audit trail, runtime refuses an ungranted permission, bot lease rows |
 | `tests/test_bot_hosting.py` | token never leaves the API, encrypted+fingerprinted at rest, per-owner/bot isolation, one-poller claims, worker offline on shutdown, recovery resumes only what should run |
@@ -347,6 +351,17 @@ Everything is environment driven — see `.env.example`. Key settings:
 
 ---
 
+## Upstream references
+
+Meikoagent is written on aiogram 3 and FastAPI; it is not a fork. Eight public bot
+projects were read for behaviour, and everything traceable is **reimplemented**, never
+copied. The per-repository table — URL, pinned commit SHA, verified licence, the full
+feature inventory taken, what is integrated, what was excluded and why, and which test
+covers it — is in [`docs/MODULES.md` §5](docs/MODULES.md#5-upstream-repositories-pinned-revisions-and-licences).
+Two repository names that appeared in earlier drafts (`abe_/playeon`,
+`cantarella/save-restricted-content-bot`) do not exist; the real sources are
+`playeon/Playeon` and `abhinai2244/save-restricted-content-bot`.
+
 ## What is deliberately *not* claimed
 
 - No fabricated analytics: charts and counters render exactly what is in the database, and empty
@@ -367,8 +382,12 @@ Everything is environment driven — see `.env.example`. Key settings:
 
 ## License
 
-Provided as-is for the MEIKO AGENT platform. Premium emoji identifiers are catalogued from
-`Beasgohan-code/Videl0`; rich-message semantics reference `Richgram`, `Wzgram` and `WZML-X`.
+Provided as-is for the MEIKO AGENT platform. No upstream source file is vendored. Premium emoji
+identifiers are catalogued from `Beasgohan-code/Videl0` (which ships no root licence — the ids are
+document asset identifiers, reproduced with unicode fallbacks); rich-message semantics reference
+`Richgram`, `Wzgram` (LGPL-3.0, optional dependency, never vendored) and `WZML-X` (AGPL-3.0, manifest
+design studied only). AGPL-3.0 sources (`ENCODING-BOT`, `CBML`, `WZML-X`) informed re-implemented
+behaviour, not code; see `docs/MODULES.md` §5.2 for the licence decision per repository.
 
 ### Builtin plugins
 

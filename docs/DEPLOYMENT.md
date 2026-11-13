@@ -4,7 +4,7 @@ Three shapes, in order of how much of the product you get.
 
 | shape | what runs where | module data lives in | use it for |
 | --- | --- | --- | --- |
-| **Compose** (recommended) | API + bot runtime + webapp + Postgres + Redis, all on one host | volume `/data/modules` | anything real: bots need a long-lived polling process |
+| **Compose** (recommended) | API + bot runtime + webapp + Postgres + Redis + the watchdog service, all on one host | volume `/data/modules` | anything real: bots need a long-lived polling process |
 | **Single container** | `python start.py` (bot + API), one process | volume `/data/modules` | a small deployment, a VPS, a Render/Fly service |
 | **Split: API on one host, console on Vercel** | FastAPI + bots somewhere durable, Next.js serverless | Supabase Storage (`MODULE_STORE_URL`) | a hosted console with a managed database |
 
@@ -74,7 +74,10 @@ process, not a function. Run `start.py --service worker` (or the combined
 | `SECRET_KEY` | session signing; generated if empty, so **set it** or every deploy invalidates sessions |
 | `ENCRYPTION_KEY` | Fernet key sealing bot tokens; if it changes, stored tokens cannot be decrypted |
 | `DATABASE_URL` | `postgresql+asyncpg://…` in production, `sqlite+aiosqlite://…` locally |
-| `REDIS_URL` | distributed locks and cache; without it the lock falls back to per-process |
+| `REDIS_URL` | distributed locks, job deduplication, worker registry and cache. **Required for any multi-process deployment** — in production (or with `REQUIRE_REDIS=1`) the API refuses to boot without it rather than silently running on per-process memory |
+| `REQUIRE_REDIS` | forces the strict behaviour above for a non-production deployment that still runs more than one process |
+| `COOKIE_SECURE` | marks the session cookie `Secure` when TLS terminates in front of a non-production deployment (production implies it) |
+| `CSRF_ENFORCE` | default on: unsafe methods are refused when the browser reports an untrusted `Origin`/`Referer` |
 | `AUTO_CREATE_SCHEMA` | `0` when Alembic owns the schema |
 | `MODULE_STORE_URL` / `MODULE_STORE_TOKEN` | module documents in object storage |
 | `MEIKO_API_URL` | console → API proxy target (server-side only) |
@@ -89,6 +92,8 @@ python -m alembic upgrade head
 
 # 2. API + bots (durable host)
 python start.py --service api      # and --service worker, or the combined default
+# 2b. the watchdog MUST be its own process: a crashed process cannot restart itself
+python start.py --service watchdog
 
 # 3. console (Vercel or `cd webapp && npm run build && npm start`)
 #    with MEIKO_API_URL pointing at step 2
@@ -105,6 +110,11 @@ curl -s -X POST "$API/api/v1/auth/dev" -H 'content-type: application/json' \
 
 * **No WebSocket through Next.** Use SSE, or expose the API directly.
 * **No bot runtime on Vercel.** Functions do not poll Telegram for a token.
+* **No watchdog in the main process.** Recovery runs as `start.py --service watchdog`
+  (its own container in Compose); folding it into the API would mean the process
+  that crashed is the one expected to notice.
+* **No in-memory Redis substitution in production.** Rate limits, the one-poller
+  bot claim and the worker registry all assume shared state.
 * **No media on a read-only filesystem.** `imageio-ffmpeg`'s binary needs to be
   executable; a container that mounts `/tmp` read-only needs `MEIKO_FFMPEG_BIN`
   pointed at a real install.

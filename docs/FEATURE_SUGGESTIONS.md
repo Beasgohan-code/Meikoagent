@@ -234,7 +234,8 @@ Playback lives **inside `music/`**: `plugin.py` keeps the toolkit wiring and
 `player.py` carries the player as a mixin, so one installation, one `/` namespace
 and one state file. (A separate `vc_player` package existed briefly; its content
 was moved here rather than kept as a parallel module.)
-Modelled on `playeon/playeon` and `Beasgohan-code/Videl0`:
+Modelled on `playeon/Playeon` and `Beasgohan-code/Videl0` (pinned revisions and
+licences are in `docs/MODULES.md` §5):
 
 | layer | file | what it does |
 | --- | --- | --- |
@@ -260,16 +261,19 @@ progress-bar glyphs) with unicode fallbacks, plus `play`/`pause`/`skip`/`stop`/
 
 ## Status note — bot packs ported from upstream projects
 
-Five packages now carry the behaviour of the reference bots, re-implemented on
-aiogram (no pyrogram, no vendored download stack, no hidden globals):
+Six packages now carry the behaviour of the reference bots, re-implemented on
+aiogram (no pyrogram, no vendored download stack, no hidden globals). Nothing
+below was copied: the per-repository table in `docs/MODULES.md` §5 records the
+pinned commit read, the verified licence, and what was excluded and why:
 
 | package | modelled on | what was taken |
 | --- | --- | --- |
-| `music` | `playeon/playeon`, `Beasgohan-code/Videl0` | full playback surface, `pb:`/`q:` card protocol, quality + `site` flags, styles/3D, playlists, chart |
+| `music` | `playeon/Playeon`, `Beasgohan-code/Videl0` | full playback surface, `pb:`/`q:` card protocol, quality + `site` flags, styles/3D, playlists, chart |
 | `encoder` | `abhinai2244/ENCODING-BOT` | x264/x265 + CRF/preset/tune, resolution/fps targets, subtitle copy/burn/extract, audio-track selection, watermarks, thumbnail, ffprobe info |
 | `filestore` | `abhinai2244/Multi-FileStoreBot` | multi-user vault: per-member quota, collections, visibility, TTL, and **signed `/start` share links** (HMAC over file+owner+expiry) |
 | `linkshare` | `abhinai2244/LINK-SHAREBOT` | protected links with a membership gate, join requests + admin approval, claim caps, per-user verify tokens |
 | `leech` | `abhinai2244/CBML` | mirror/leech task engine: flags, progress/ETA/speed, per-user + global concurrency, cancel, stats — with a pluggable backend |
+| `saver` | `abhinai2244/save-restricted-content-bot` | caption templating, delete/replace word rules, thumbnails, dump chat, send modes, dedup, batch link parsing; session-string login deliberately refused |
 
 **What was deliberately not copied.** CBML's aria2/qBittorrent/SABnzbd/rclone
 plant, its mongo/pyrogram session layer and the pyarmor-obfuscated segments are

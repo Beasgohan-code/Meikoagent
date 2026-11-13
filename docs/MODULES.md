@@ -62,14 +62,20 @@ about every one.
 
 ## 3. Upstream audit: what was inspected
 
-All seven repositories were cloned and read at source level (`/tmp/refs`), not
-just their READMEs.
+Every repository in the table below was read at source level (clone or GitHub API
+tree walk), not just its README. The pinned commit is the revision that was read;
+licences were read from the repository itself, not from a badge. Two entries that
+earlier draft documentation carried (`abe_/playeon`, `cantarella/save-restricted-content-bot`)
+do not exist — both returned HTTP 404 from the GitHub API — and have been replaced
+by the real repositories (`playeon/Playeon` and `abhinai2244/save-restricted-content-bot`).
+No upstream file was copied into this repository; everything traceable is marked
+**reimplemented** and the attribution lives in the module docstring.
 
-### 3.1 `abe_/playeon` + `Beasgohan-code/Videl0` → **music**
+### 3.1 `playeon/Playeon` + `Beasgohan-code/Videl0` → **music**
 
-*Inspected*: `playeon`'s `player/`, `queue.py`, card rendering, callback protocol,
-premium-emoji ids; `Videl0`'s plugin layout, `-f/-sd/-hd/-fhd/-2k/-4k` flags,
-`site` argument handling, playlist/chart.
+*Inspected*: `Playeon`'s `playeon-bot/player/`, `queue.py`, card rendering, callback
+protocol, premium-emoji ids; `Videl0`'s plugin layout, `-f/-sd/-hd/-fhd/-2k/-4k`
+flags, `site` argument handling, playlist/chart.
 
 *Reused (re-implemented on aiogram)*: playback state machine (`Track`,
 `QueueState`, `PlayerQueue`), quality flags, `pb:`/`q:` callback protocol, card
@@ -168,7 +174,7 @@ obfuscated modules (unreadable, therefore unreviewable). Instead
 HTTP, local, Telegram and cloud implementations; cloud reports unavailable until
 rclone and a remote exist.
 
-### 3.6 `cantarella/save-restricted-content-bot` → **saver**
+### 3.6 `abhinai2244/save-restricted-content-bot` → **saver**
 
 *Inspected*: the full command list (`add_premium, add_unsubscribe, ban,
 broadcast, cancel, cancellogin, cmd, commands, dblink, del_caption, del_thumb,
@@ -261,18 +267,41 @@ that resolves to a private address is a network-level problem (egress policy,
 DNS pinning), not something a pure validator can decide without making every
 call slow and flaky. That limit is stated here rather than papered over.
 
-## 5. Licensing
+## 5. Upstream repositories, pinned revisions and licences
 
-| upstream | licence | what Meiko may do |
+Every row was verified live against the GitHub API: repository URL, default branch,
+the commit SHA that was read, and the licence file that repository actually ships.
+`Integrated` means the capability is wired into the running platform (backend,
+API and UI); `Reimplemented` is what was re-written on aiogram rather than copied.
+Tests are the files in this repository that exercise the resulting behaviour.
+
+### 5.1 Repository table
+
+| Repository URL | Pinned commit | Licence (verified) | Feature inventory read | Integrated | Reimplemented | Excluded | Reason | Tests |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `https://github.com/Beasgohan-code/Videl0` | `6430b1e5e60e0776a7ab519e05cb98c2ca1a2ebf` (main) | **No licence at repository root** (`license: null`); `webapp/VYRON-LICENSE.md` (MIT) covers the adapted frontend; vendored `vendor/eldian_music_api/LICENSE`, `vendor/richgram/LICENSE` retained | music playback flags (`-f/-sd/-hd/-fhd/-2k/-4k`), `site` argument, playlists, chart, plugin layout, rich-message card rendering, premium emoji ids, Koyeb/Render deploy files, audit CSVs | yes: `meiko/modules/music`, `meiko/ui`, `meiko/webapp` transport | playback flags, playlist/chart commands, rich card layout, UI engine | upstream vendored music API and Richgram trees; VYRON frontend | no root licence means no upstream code may be copied; only interaction patterns were studied. Vendored licences belong to their own projects and were not redistributed | `tests/test_music_player.py`, `tests/test_ui_engine.py` |
+| `https://github.com/playeon/Playeon` | `6ec6097bc7f5db19583618c226a5e4c410b90cee` (main) | `NOASSERTION` — restrictive, no redistribution/rebrand/commercial use | `playeon-bot/` player state machine, queue, callback protocol, card rendering; `playeon-web/` dashboard; `deploy/` | yes: `meiko/modules/music`, `meiko/webapp` | queue state machine, `pb:`/`q:` callback protocol, card layout, seek clamping, loop/autoplay interaction | all source code; the TypeScript web dashboard | licence forbids redistribution and rebranding | `tests/test_music_player.py` |
+| `https://github.com/abhinai2244/save-restricted-content-bot` | `bf2e45a1ef187060e053e59c0336cb0e6a4a022b` (master) | **MIT** | 36-command surface (`add_premium`, `ban`, `broadcast`, `set_caption`, `set_dump`, `set_thumb`, `thumb_mode`, …), caption templating, delete/replace word rules, dump chat, session-string login | yes: `meiko/modules/saver` | caption rules, word filters, thumbnails, dump chat, send modes, dedup, batch link parsing, settings panel | `login`/`logout`/`cancellogin` session-string flow | handing a user session string to a bot reaches chats the bot is not a member of — a deliberate bypass, refused | `tests/test_saver_pipeline.py`, `tests/test_url_policy.py` |
+| `https://github.com/abhinai2244/ENCODING-BOT` | `84d4e256e2f2047c653691b5b59bfdea2a262fae` (master) | **AGPL-3.0** | `VideoEncoder/plugins/{encode,queue,upload,settings,status,thumbnail,auth,callbacks_,speed_test,start}.py`, `utils/encoding.py`, `utils/pyrogram_patch.py`, `utils/lk21_patch.py` | yes: `meiko/modules/encoder` | encode plan/argv building, queue semantics, progress parsing, speed test, thumbnail handling | `pyexec.py` (arbitrary code execution plugin) and the pyrogram patches | `pyexec` is remote code execution by design; the patches modify a client library we do not use. AGPL obligations noted in §5.2 | `tests/test_encoder.py` |
+| `https://github.com/abhinai2244/Multi-FileStoreBot` | `010172404c2121862deea99f0fe25766d130e392` (main) | **No licence file** | `backend/` Cloudflare worker, file metadata model, token/batch link scheme, deploy scripts | yes: `meiko/modules/filestore` | file metadata model, batch link scheme, multi-tenant token scoping | `pyarmor_runtime_000000/` obfuscated code and the committed `.secret_key` | obfuscated runtime cannot be audited or reimplemented honestly; a committed secret is a live credential, never reused | `tests/test_filestore.py` |
+| `https://github.com/abhinai2244/LINK-SHAREBOT` | `265f2acbe720571e7c514cd32eea600292656fe2` (master) | **No licence file** | `plugins/{approve,route,settings,start}.py`: link verification gate, verified-user model, route handling | yes: `meiko/modules/linkshare` | verification gate, shortlink routing, verified-user state | the bot's own shortener credentials/host | tokens belong to the upstream deployment; this platform only implements the gate | `tests/test_linkshare_leech.py`, `tests/test_url_policy.py` |
+| `https://github.com/abhinai2244/CBML` | `4d13aa14a9d44af426f740db5905c3a22001ad38` (main) | **AGPL-3.0** | `plugins/`, `myjd/` (JDownloader), `qBittorrent/`, deploy scripts | yes: `meiko/modules/leech` (task semantics) | download-task model, queue/task states, progress accounting | the bulk of the plugin bodies; the deploy scripts | large parts are deployment-specific; AGPL obligations noted in §5.2 | `tests/test_linkshare_leech.py` |
+| `https://github.com/rjriajul/wzgram` | `f256c1dafe12bf3d80918772c49315d3eeb3cfc5` (dev) | **LGPL-3.0** | Pyrogram fork (`wzgram/`, `pyrogram/` compat layer, `compiler/`) | no — optional dependency | not reimplemented: referenced for rich-message semantics only | the fork itself | LGPL-3.0 plus a forked client library; used as an optional dependency, never vendored | `tests/test_toolchain.py` (dependency audit) |
+| `https://github.com/SilentDemonSD/WZML-X` | `91f9702ce278e56e1bf3f60138f77e633573f3d4` (`wzv3`; plugins live on `wzv3-dev`) | **AGPL-3.0** | top-level `plugins/` with per-plugin `wzml_plugin.yml`, `plugins/index.json`, `plugins/index.schema.json` | partial: manifest design informs `meiko/plugins/manifest.py` | plugin manifest schema (YAML + index + JSON-schema validation), category/command metadata | the plugins themselves and the repo-wide task runner | AGPL-3.0; plugin bodies are that project's work and were not reused | `tests/test_plugins.py`, `tests/test_modules_contract.py` |
+
+### 5.2 Licence decisions
+
+| upstream | licence | decision |
 | --- | --- | --- |
-| Playeon | restrictive (no redistribution/rebrand/commercial) | architecture study only; **no code copied** |
-| Videl0 | repository licence as published | patterns re-implemented on aiogram |
-| ENCODING-BOT | as published | plan/argv re-implemented, attribution in `docs/FEATURE_SUGGESTIONS.md` |
-| Multi-FileStoreBot | as published | tenancy model re-implemented |
-| LINK-SHAREBOT | as published | link gate re-implemented |
-| CBML | as published | task semantics re-implemented; obfuscated parts unreadable → not reused |
-| save-restricted-content-bot | as published | parser/caption rules re-implemented; session login refused |
-| wzgram | LGPL-3.0 | used as an optional dependency, never vendored |
+| Playeon | restrictive (NOASSERTION; no redistribution/rebrand/commercial) | architecture study only; **no code copied** |
+| Videl0 | no root licence (MIT only for the adapted VYRON frontend, retained vendored notices) | patterns reimplemented on aiogram; no upstream source copied |
+| ENCODING-BOT | AGPL-3.0 | plan/argv semantics reimplemented, not copied. Reading it created derivative-adjacent knowledge, so the encoder module states its lineage in its docstring. Any future verbatim reuse must adopt AGPL-3.0 for this component |
+| Multi-FileStoreBot | no licence file | treated as all-rights-reserved: nothing copied; tenancy model independently reimplemented |
+| LINK-SHAREBOT | no licence file | treated as all-rights-reserved: link gate independently reimplemented |
+| CBML | AGPL-3.0 | task semantics reimplemented; obfuscated/deprecated parts unreadable, so not reused |
+| save-restricted-content-bot | MIT | parser/caption rules reimplemented; attribution is permitted and recorded; session login refused |
+| wzgram | LGPL-3.0 | optional dependency, never vendored |
+| WZML-X | AGPL-3.0 | manifest schema design studied and reimplemented; plugin bodies not reused |
 
 No upstream source file is copied into this repository. Where an idea is
 directly traceable (encode argv, flag names, card layout) the attribution is in
@@ -311,7 +340,37 @@ GET/POST  /api/v1/linkshare/{links,batch,settings,analytics}
 GET/POST  /api/v1/leech/{jobs,sources,validate,jobs/{id}/retry}
 GET       /api/v1/platform/{modules,storage,jobs}
 GET       /api/v1/plugins/effective
+
+# Command Studio
+GET       /api/v1/bots/{id}/commands?search=&category=
+GET       /api/v1/bots/{id}/commands/categories
+GET/PUT/DELETE /api/v1/bots/{id}/commands/{name}/override
+GET       /api/v1/bots/{id}/commands/logs?limit=&result=
+GET       /api/v1/bots/{id}/commands/stats
+POST      /api/v1/bots/{id}/commands/test
+GET       /api/v1/bots/{id}/commands/export  ·  POST /import
+
+# Bot hosting
+GET       /api/v1/bots/{id}/{logs,usage,tasks}
+POST      /api/v1/bots/{id}/{start,stop,restart}   (one-poller lease enforced)
+
+# Plugin lifecycle records
+GET       /api/v1/plugins/installations/{id}/history
+GET       /api/v1/plugins/installations/{id}/permissions
+PUT       /api/v1/plugins/installations/{id}/permissions
+DELETE    /api/v1/plugins/installations/{id}/permissions/{permission}
 ```
+
+### Command Studio limits, stated plainly
+
+The console can describe, categorise, alias, scope, enable/disable and *simulate* a
+command. It can never repoint a handler: `OverrideRequest` accepts no
+`handler_type`, `handler_ref` or `definition`, and the strongest permission it can
+apply is the one the platform already knows. `POST …/commands/test` runs the same
+checks the dispatcher would (permission ladder, scope, enabled, registered,
+template render) and returns `sent_to_telegram: false` and
+`executed_handler: false` — running `/ban` from a form would be a moderation action,
+not a test. No arbitrary Python is executed anywhere in the webapp path.
 
 ---
 
@@ -461,6 +520,8 @@ separate action.
 | platform install | `plugin_packages.state` | `available → review_pending → approved → platform_installed` |
 | activation | `plugin_installations.state` | `installed → enabled → configured → running` (`running` from the runtime) |
 | runtime | `PluginManager._running` | the only source of truth for "is it running right now" |
+| history | `plugin_install_events` | append-only: who installed/enabled/configured/disabled it, from which version, and why it failed |
+| permission grant | `plugin_permission_grants` | a declared permission is a *request*; only a row here makes it effective, and revoking it is a dated update, not a delete |
 
 ### 12.1 The import pipeline
 
@@ -504,8 +565,12 @@ records a finding the owner sees instead of a generic error:
 ### 12.2 What an imported package can never do
 
 * declare a permission outside `meiko.plugins.manifest.PERMISSIONS` (fails validation)
-* grant itself a permission at runtime (`PluginContext.require` checks the granted set;
-  `permission_changes()` surfaces a manifest that asks for more than was approved)
+* grant itself a permission at runtime. Two independent gates: `PluginContext.require`
+  checks the granted set, and `PluginManager.start()` refuses to start a plugin whose
+  declared permissions are not all present in the grant rows handed to it — running it
+  with a silently reduced capability set would fail half-way through an operation
+  instead of refusing up front. `permission_changes()` surfaces a manifest that asks
+  for more than was approved.
 * ship an install hook that runs (`setup.py`/`pyproject.toml`/`Makefile`/`Dockerfile`
   are flagged, never executed — a test writes a marker file into `setup.py` and asserts
   the marker does not appear)
@@ -522,3 +587,68 @@ records a finding the owner sees instead of a generic error:
 * Two manifest files at the same depth are refused rather than guessed.
 * Python packages cannot be installed from arbitrary indexes; the dependency check is
   an allowlist, not a resolver.
+
+---
+
+## 13. Writing a plugin
+
+There is one way to add behaviour to a bot, and it is a plugin package. The
+manifest schema was informed by WZML-X's `wzml_plugin.yml` precedent (see §5), but
+nothing was copied; this is the schema `meiko/plugins/manifest.py` validates.
+
+### 13.1 Layout
+
+```
+meiko/plugins/builtin/mytool/
+├── manifest.py        # typed manifest: slug, version, commands, permissions, config
+├── plugin.py          # class MyTool(Plugin) with setup() / on_start() / handlers
+└── __init__.py        # exports `manifest` and the plugin class
+```
+
+Registration happens through `meiko/plugins/base.py::registry`; a package that is not
+registered cannot be installed, and a slug that is not implemented reports
+`implemented: false` in the catalogue instead of failing at start time.
+
+### 13.2 Manifest fields that matter
+
+| field | consequence |
+| --- | --- |
+| `slug` | stable identity, unique; the install row, log rows and command ownership all key on it |
+| `version` | shown in the installation and recorded in `plugin_install_events` |
+| `commands` | published to the Command Studio and Telegram's menu **only while running**; `plugin_registry` ownership is used for per-bot overrides |
+| `permissions` | a *request*. Must be members of `PERMISSIONS`; each one needs a grant row before the plugin may start |
+| `dependencies` | other plugins that must already be running in the same scope |
+| `config_schema` | drives the settings form, `required_config_missing()`, and value coercion; secrets are stored in the installation row and are **never** written to history |
+
+### 13.3 Rules the platform enforces
+
+1. **No install hooks.** `setup.py`, `pyproject.toml`, `Makefile` and `Dockerfile` in an
+   imported package are flagged and never executed.
+2. **No self-granted permissions.** `PluginContext.require(...)` checks the granted set,
+   and `PluginManager.start()` refuses a plugin whose declared permissions are not all
+   granted.
+3. **No arbitrary code from the console.** The webapp can enable, configure and test a
+   plugin; it cannot upload or execute Python. Declarative commands and workflows are
+   validated data (`meiko/core/declarative.py`), never `eval`.
+4. **Scope is explicit.** Every handler runs inside a `PluginContext` carrying the
+   `PluginScope(bot_id, group_id)`; state must be written through
+   `meiko/modules/store.py`, which namespaces by scope and refuses cross-scope reads.
+5. **Disabled means inert.** No router is registered and no job starts, so a disabled
+   module cannot answer a stale callback.
+
+### 13.4 Testing a plugin
+
+`tests/telegram_harness.py` builds real aiogram `Update` objects against a recording
+`Bot` session, so a plugin test exercises its actual handlers rather than calling
+functions directly:
+
+```python
+async def test_my_command(harness, bot, dispatcher):
+    await harness.send(dispatcher, bot, text="/mytool", user_id=1, chat_id=-100)
+    assert harness.last_text().startswith("…")
+```
+
+Suites that do this per module: `tests/test_music_player.py`,
+`tests/test_encoder.py`, `tests/test_filestore.py`,
+`tests/test_linkshare_leech.py`, `tests/test_saver_pipeline.py`,
+`tests/test_plugin_routing.py`.
