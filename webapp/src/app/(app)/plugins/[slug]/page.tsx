@@ -54,7 +54,9 @@ export default function PluginDetailPage() {
 
   const configure = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
-      api.patch<PluginInstallation>(`/plugins/installations/${installation?.id}/configure`, { config: payload }),
+      api.patch<PluginInstallation>(`/plugins/installations/${installation!.id}/configure`, {
+        config: payload,
+      }),
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["plugins-installed"] });

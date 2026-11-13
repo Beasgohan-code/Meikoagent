@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1001 tests
+python -m pytest -q          # 1023 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -285,6 +285,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
+| `tests/test_acceptance.py` | every console endpoint exists in OpenAPI, mandatory plugin-security checks, module routes answer, every page exists and is navigable, failed mutations leave no state |
 | `tests/test_docs_contract.py` | the README's test/table/path counts match the code, the upstream table pins every repository + licence, no row claims a copy |
 | `tests/test_schema_migrations.py` | migrations reproduce the models (columns + indexes), downgrade/reapply, no destructive upgrade, BIGINT for Telegram ids, optional live PostgreSQL run |
 | `tests/test_plugin_schema.py` | install history, permission grant/revoke with audit trail, runtime refuses an ungranted permission, bot lease rows |

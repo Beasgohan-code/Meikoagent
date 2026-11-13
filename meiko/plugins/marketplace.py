@@ -92,6 +92,12 @@ DANGEROUS_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("filesystem", r"open\s*\(\s*['\"]/(?:etc|proc|sys)", "reads system paths"),
     ("obfuscation", r"base64\.b64decode\s*\(", "decodes an obfuscated payload"),
     ("obfuscation", r"(?:\\x[0-9a-fA-F]{2}){8,}", "long escaped byte string (obfuscation)"),
+    # A plain ``open(...).write(...)`` at import time is indistinguishable from a
+    # file dropper, and an install hook is exactly where it would hide.
+    ("rce", r"open\s*\([^)\n]{0,80}\bw[a-z]?\b", "writes a file as part of the scanned source"),
+    # A scan that only reads a package's ``.py`` files would miss a JS payload.
+    ("eval", r"\bnew\s+Function\s*\(", "eval of arbitrary code (new Function)"),
+    ("eval", r"\bchild_process\b", "spawns a subprocess"),
 )
 
 #: Files that a package may never need, and whose presence is a red flag.
@@ -339,6 +345,28 @@ def inspect_directory(
         if suffix and suffix not in ALLOWED_SUFFIXES and not name.lower().startswith("license"):
             result.add("warning", "file.unexpected_type", f"unexpected file type {suffix}", name)
 
+    # Static scan -------------------------------------------------------------
+    # This used to run *after* the licence and manifest gates returned early, so a
+    # package that shipped a hook and no manifest was reported as "manifest.missing"
+    # alone and its payload was never scanned. Scanning is the security control; it
+    # must not depend on the package being otherwise well-formed.
+    scanned = 0
+    for name in files:
+        if not name.endswith((".py", ".js", ".mjs", ".cjs", ".sh", ".json", ".yaml", ".yml")):
+            continue
+        path = root / name
+        try:
+            if path.stat().st_size > MAX_FILE_BYTES:
+                result.add("warning", "file.too_large", "file skipped by the scanner (too large)", name)
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:  # pragma: no cover - unreadable file
+            result.add("warning", "file.unreadable", "file could not be read", name)
+            continue
+        scanned += 1
+        result.findings.extend(scan_source(text, name))
+    result.add("info", "scan.completed", f"statically scanned {scanned} files; nothing was executed")
+
     # Licence -----------------------------------------------------------------
     spdx, _text = detect_licence(root)
     result.licence = spdx
@@ -382,24 +410,6 @@ def inspect_directory(
             )
     for dependency in getattr(manifest, "platform_dependencies", []) or []:
         result.add("warning", "dependency.unchecked", str(dependency))
-
-    # Static scan -------------------------------------------------------------
-    scanned = 0
-    for name in files:
-        if not name.endswith((".py", ".js", ".json", ".yaml", ".yml")):
-            continue
-        path = root / name
-        try:
-            if path.stat().st_size > MAX_FILE_BYTES:
-                result.add("warning", "file.too_large", "file skipped by the scanner (too large)", name)
-                continue
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:  # pragma: no cover - unreadable file
-            result.add("warning", "file.unreadable", "file could not be read", name)
-            continue
-        scanned += 1
-        result.findings.extend(scan_source(text, name))
-    result.add("info", "scan.completed", f"statically scanned {scanned} files; nothing was executed")
 
     result.ok = not result.blocked
     return result
