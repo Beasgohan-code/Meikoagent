@@ -859,7 +859,9 @@ class PluginService:
         )
         return install
 
-    async def transition(self, install: PluginInstallation, state: str) -> PluginInstallation:
+    async def transition(
+        self, install: PluginInstallation, state: str, *, actor_user_id: int | None = None
+    ) -> PluginInstallation:
         if state not in PLUGIN_STATES:
             raise ValidationError(f"unknown plugin state {state!r}")
         if install.state == state:
@@ -874,7 +876,9 @@ class PluginService:
         if state == "enabled":
             install.enabled_at = utcnow()
         await self.session.flush()
-        await self._record(install, f"state.{state}", previous, state)
+        await self._record(
+            install, f"state.{state}", previous, state, actor_user_id=actor_user_id
+        )
         return install
 
     async def _record(
@@ -919,7 +923,9 @@ class PluginService:
         ).all()
         return list(rows)
 
-    async def enable(self, install: PluginInstallation) -> PluginInstallation:
+    async def enable(
+        self, install: PluginInstallation, *, actor_user_id: int | None = None
+    ) -> PluginInstallation:
         """Enable an installation after verifying its required configuration.
 
         ``installed -> enabled`` always happens; when required config is missing
@@ -930,23 +936,33 @@ class PluginService:
         assert plugin is not None
         missing = required_config_missing(plugin.config_schema, install.config or {})
         if install.state in ("installed", "disabled"):
-            await self.transition(install, "enabled")
+            await self.transition(install, "enabled", actor_user_id=actor_user_id)
         if missing:
             raise ValidationError("missing required configuration: " + ", ".join(missing))
         if install.state == "enabled":
-            await self.transition(install, "configured")
+            await self.transition(install, "configured", actor_user_id=actor_user_id)
         return install
 
-    async def disable(self, install: PluginInstallation) -> PluginInstallation:
+    async def disable(
+        self, install: PluginInstallation, *, actor_user_id: int | None = None
+    ) -> PluginInstallation:
         if install.state != "disabled":
             previous = install.state
             install.state = "disabled"
             install.enabled_at = None
             await self.session.flush()
-            await self._record(install, "state.disabled", previous, "disabled")
+            await self._record(
+                install, "state.disabled", previous, "disabled", actor_user_id=actor_user_id
+            )
         return install
 
-    async def configure(self, install: PluginInstallation, values: dict[str, Any]) -> PluginInstallation:
+    async def configure(
+        self,
+        install: PluginInstallation,
+        values: dict[str, Any],
+        *,
+        actor_user_id: int | None = None,
+    ) -> PluginInstallation:
         plugin = await self.session.get(Plugin, install.plugin_id)
         assert plugin is not None
         merged = dict(install.config or {})
@@ -961,7 +977,12 @@ class PluginService:
         await self.session.flush()
         # Keys only: a history row must never store a secret the operator typed.
         await self._record(
-            install, "configured", "", install.state, message="keys: " + ", ".join(sorted(values))
+            install,
+            "configured",
+            "",
+            install.state,
+            actor_user_id=actor_user_id,
+            message="keys: " + ", ".join(sorted(values)),
         )
         return install
 

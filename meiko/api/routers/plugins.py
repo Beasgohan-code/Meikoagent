@@ -435,12 +435,12 @@ async def toggle_by_slug(
                 "configure before enabling: " + ", ".join(missing),
             )
         try:
-            await service.enable(record)
+            await service.enable(record, actor_user_id=auth.user.id)
         except ValidationError as exc:
             raise error(422, "config_required", str(exc)) from exc
         runtime = await _sync_runtime(record.bot_id, plugin.slug)
     else:
-        await service.disable(record)
+        await service.disable(record, actor_user_id=auth.user.id)
         runtime = await _stop_runtime(record, plugin.slug)
     await AuditService(session).log(
         "plugin.toggled",
@@ -693,7 +693,9 @@ async def configure(
         auth, session, await session.get(PluginInstallation, installation_id)
     )
     try:
-        record = await PluginService(session).configure(record, payload.config)
+        record = await PluginService(session).configure(
+            record, payload.config, actor_user_id=auth.user.id
+        )
     except ValidationError as exc:
         raise error(422, "invalid_config", str(exc)) from exc
     await AuditService(session).log(
@@ -713,7 +715,7 @@ async def enable(installation_id: int, auth: CurrentAuth, session: SessionDep) -
     )
     service = PluginService(session)
     try:
-        await service.enable(record)
+        await service.enable(record, actor_user_id=auth.user.id)
     except ValidationError as exc:
         raise error(422, "config_required", str(exc)) from exc
     plugin = await session.get(Plugin, record.plugin_id)
@@ -739,7 +741,7 @@ async def disable(installation_id: int, auth: CurrentAuth, session: SessionDep) 
         auth, session, await session.get(PluginInstallation, installation_id)
     )
     plugin = await session.get(Plugin, record.plugin_id)
-    await PluginService(session).disable(record)
+    await PluginService(session).disable(record, actor_user_id=auth.user.id)
     runtime = await _stop_runtime(record, plugin.slug if plugin else "")
     await AuditService(session).log(
         "plugin.disabled",

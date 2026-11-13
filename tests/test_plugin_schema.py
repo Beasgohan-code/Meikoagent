@@ -79,6 +79,36 @@ class TestInstallHistory:
         # Newest first, so disabled comes before installed.
         assert actions.index("installed") > 0
 
+    async def test_history_names_the_actor_for_every_change(self, client, session):
+        """'Who enabled it' is the reason this table exists."""
+        from sqlalchemy import select
+
+        from meiko.db.models import PluginInstallEvent, User
+
+        headers, bot_id = await setup_bot(client, 7106)
+        installation_id = await install(client, headers, bot_id)
+        await client.post(
+            f"/api/v1/plugins/installations/{installation_id}/enable", headers=headers
+        )
+        await client.post(
+            f"/api/v1/plugins/installations/{installation_id}/disable", headers=headers
+        )
+        rows = (
+            await session.scalars(
+                select(PluginInstallEvent)
+                .where(PluginInstallEvent.installation_id == installation_id)
+                .order_by(PluginInstallEvent.id)
+            )
+        ).all()
+        assert rows
+        actors = {row.action: row.actor_user_id for row in rows}
+        # Every transition written through the API records who did it.
+        for action in ("installed", "state.enabled", "state.configured", "state.disabled"):
+            if action in actors:
+                assert actors[action] is not None, f"{action} has no actor"
+        owner = await session.scalar(select(User).where(User.telegram_id == 7106))
+        assert {row.actor_user_id for row in rows} == {owner.id}
+
     async def test_history_is_tenant_scoped(self, client):
         owner, bot_id = await setup_bot(client, 7103)
         installation_id = await install(client, owner, bot_id)
