@@ -14,17 +14,54 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 DEFAULT_MODULES = ("music", "saver", "encoder", "filestore", "linkshare", "leech")
 
 
 class ModuleStore:
-    """Atomic JSON documents keyed by ``(module, scope)``."""
+    """Atomic JSON documents keyed by ``(module, scope)``.
 
-    def __init__(self, root: str | Path, *, cache_documents: bool = True) -> None:
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+Two persistence modes, chosen by the first constructor argument:
+
+``ModuleStore("/data/modules")``
+    One file per scope, written with ``mkstemp`` + ``os.replace`` so a crash can
+    never leave a half-written document. This needs a filesystem that outlives
+    the process.
+
+``ModuleStore("supabase://<project-ref>/<bucket>", token=...)``
+    Documents live in a Supabase Storage bucket over HTTPS. Nothing is kept on
+    local disk, so a serverless deployment (Vercel) works instead of silently
+    losing every setting on the next cold start. The interface is identical; the
+    same ``_read``/``_write`` contract backs both. A ``warn`` hook fires when a
+    write fails, because a module that keeps acknowledging saves while the
+    backend is down is worse than one that says so.
+
+The remote mode is deliberately thin: no caching layer beyond the existing
+document cache, no retries beyond httpx's, and no invented bucket — an operator
+creates it and grants the key access.
+"""
+
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        cache_documents: bool = True,
+        token: str = "",
+        url: str = "",
+        timeout: float = 10.0,
+        warn: Callable[[str], None] | None = None,
+    ) -> None:
+        target = str(root)
+        self.remote: _RemoteStore | None = None
+        if target.startswith("supabase://"):
+            self.remote = _RemoteStore.parse(target, token=token, url=url, timeout=timeout)
+            self.root = Path(f"supabase://{self.remote.bucket}")
+            self._warn = warn or (lambda message: None)
+        else:
+            self.root = Path(root)
+            self.root.mkdir(parents=True, exist_ok=True)
+            self._warn = warn or (lambda message: None)
         self._cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._cache_documents = cache_documents
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -45,6 +82,11 @@ class ModuleStore:
         key = (module, scope)
         if self._cache_documents and key in self._cache:
             return self._cache[key]
+        if self.remote is not None:
+            document = self.remote.read(self._key(module, scope)) or {}
+            if self._cache_documents:
+                self._cache[key] = document
+            return document
         path = self._path(module, scope)
         document: dict[str, Any] = {}
         if path.is_file():
@@ -64,6 +106,17 @@ class ModuleStore:
         return document
 
     def write(self, module: str, scope: str, document: dict[str, Any]) -> None:
+        if self.remote is not None:
+            key = self._key(module, scope)
+            if not self.remote.write(key, document):
+                # never leave the cache claiming a save that did not happen
+                self._cache.pop((module, scope), None)
+                self._warn(f"could not persist {module}/{scope} to remote storage")
+                return
+            self._index_remote(module, scope)
+            if self._cache_documents:
+                self._cache[(module, scope)] = document
+            return
         path = self._path(module, scope)
         self._index(module, scope)
         payload = json.dumps(document, ensure_ascii=False, indent=1, default=str)
@@ -107,7 +160,26 @@ class ModuleStore:
         self.write(module, scope, document)
         return document
 
+    @staticmethod
+    def _key(module: str, scope: str) -> str:
+        safe_module = "".join(ch for ch in module if ch.isalnum() or ch in "-_") or "module"
+        safe_scope = "".join(ch for ch in scope if ch.isalnum() or ch in "-_:.") or "global"
+        return f"{safe_module}/{safe_scope.replace(':', '_')}.json"
+
+    def _index_remote(self, module: str, scope: str) -> None:
+        assert self.remote is not None
+        index_key = f"{module}/_scopes.json"
+        names = self.remote.read(index_key) or []
+        names = [str(name) for name in names] if isinstance(names, list) else []
+        if scope in names:
+            return
+        names.append(scope)
+        self.remote.write(index_key, sorted(names))
+
     def scopes(self, module: str) -> list[str]:
+        if self.remote is not None:
+            names = self.remote.read(f"{module}/_scopes.json") or []
+            return sorted(str(name) for name in names) if isinstance(names, list) else []
         """Every scope this module has persisted.
 
         Filenames replace ``:`` with ``_``, which is not reversible, so an index
@@ -137,6 +209,13 @@ class ModuleStore:
 
     def forget(self, module: str, scope: str) -> bool:
         """Delete one scope's document and its index entry."""
+        if self.remote is not None:
+            self._cache.pop((module, scope), None)
+            removed = self.remote.delete(self._key(module, scope))
+            names = self.remote.read(f"{module}/_scopes.json") or []
+            if isinstance(names, list) and scope in names:
+                self.remote.write(f"{module}/_scopes.json", [n for n in names if n != scope])
+            return removed
         path = self._path(module, scope)
         self._cache.pop((module, scope), None)
         removed = False
@@ -155,6 +234,88 @@ class ModuleStore:
         return removed
 
 
+class _RemoteStore:
+    """Supabase Storage over the REST API (create/read/update/delete + list).
+
+    Objects are addressed as ``<bucket>/<module>/<scope>.json``. The service key
+    is required (row-level security is bypassed deliberately: this is a
+    server-to-server call), and it is never logged or echoed in an error.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        bucket: str,
+        token: str,
+        timeout: float = 10.0,
+        transport: Any = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.bucket = bucket
+        self.token = token
+        self.timeout = timeout
+        self._transport = transport  # injectable for tests
+
+    @classmethod
+    def parse(cls, dsn: str, *, token: str = "", url: str = "", timeout: float = 10.0) -> "_RemoteStore":
+        """``supabase://<project-ref>/<bucket>`` → settings; the key comes from ``token``."""
+        rest = dsn[len("supabase://"):]
+        project, _, bucket = rest.partition("/")
+        if not project or not bucket:
+            raise ValueError("supabase storage needs supabase://<project-ref>/<bucket>")
+        base = url.rstrip("/") if url else f"https://{project}.supabase.co"
+        return cls(base_url=f"{base}/storage/v1/object", bucket=bucket, token=token, timeout=timeout)
+
+    def _client(self) -> Any:
+        if self._transport is not None:
+            return self._transport
+        import httpx
+
+        headers = {"apikey": self.token, "Authorization": f"Bearer {self.token}"}
+        return httpx.Client(base_url=self.base_url, headers=headers, timeout=self.timeout)
+
+    def _url(self, key: str) -> str:
+        return f"/{self.bucket}/{key}"
+
+    def read(self, key: str) -> Any:
+        client = self._client()
+        try:
+            response = client.get(self._url(key))
+        except Exception:  # network down: the caller degrades to an empty document
+            return None
+        if getattr(response, "status_code", 0) != 200:
+            return None
+        try:
+            return response.json()
+        except Exception:
+            return None
+
+    def write(self, key: str, document: Any) -> bool:
+        client = self._client()
+        payload = json.dumps(document, ensure_ascii=False, default=str).encode("utf-8")
+        headers = {"Content-Type": "application/json", "x-upsert": "true"}
+        try:
+            response = client.post(self._url(key), content=payload, headers=headers)
+            if getattr(response, "status_code", 500) >= 400:
+                # the object may not exist yet: create it explicitly before failing
+                created = client.post(
+                    f"/{self.bucket}", content=payload, headers={**headers, "x-upsert": "true"}
+                )
+                return getattr(created, "status_code", 500) < 400
+            return True
+        except Exception:
+            return False
+
+    def delete(self, key: str) -> bool:
+        client = self._client()
+        try:
+            response = client.delete(self._url(key))
+        except Exception:
+            return False
+        return getattr(response, "status_code", 500) in {200, 204}
+
+
 _STORE: ModuleStore | None = None
 
 
@@ -165,8 +326,16 @@ def get_module_store() -> ModuleStore:
         from meiko.config import get_settings
 
         settings = get_settings()
-        root = Path(getattr(settings, "data_dir", "data")) / "modules"
-        _STORE = ModuleStore(root)
+        dsn = str(getattr(settings, "module_store_url", "") or "").strip()
+        if dsn:
+            _STORE = ModuleStore(
+                dsn,
+                token=str(getattr(settings, "module_store_token", "") or ""),
+                url=str(getattr(settings, "module_store_base_url", "") or ""),
+            )
+        else:
+            root = Path(getattr(settings, "data_dir", "data")) / "modules"
+            _STORE = ModuleStore(root)
     return _STORE
 
 

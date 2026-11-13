@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     #: ``AUTO_CREATE_SCHEMA=false`` and run ``--service migrate`` first).
     auto_create_schema: bool = True
 
+    # ------------------------------------------------------------ module data
+    #: Where module documents live. Empty = ``<data_dir>/modules`` on disk.
+    #: ``supabase://<project-ref>/<bucket>`` keeps them in Storage instead, which
+    #: is what a serverless deployment needs (no durable local filesystem).
+    module_store_url: str = ""
+    module_store_token: str = ""
+    #: Optional override for self-hosted Storage (defaults to the project host).
+    module_store_base_url: str = ""
+
     # -------------------------------------------------------------- database
     database_url: str = ""
     db_echo: bool = False

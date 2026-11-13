@@ -354,6 +354,28 @@ every change.
 
 ---
 
+### 9.1 Where module documents live
+
+`ModuleStore` has two interchangeable backends, chosen by its first argument:
+
+| mode | constructor | for |
+| --- | --- | --- |
+| filesystem | `ModuleStore("<data_dir>/modules")` | a bot process or container with a durable volume — the default |
+| Supabase Storage | `ModuleStore("supabase://<ref>/<bucket>", token=…)` | a **serverless** host, where local files vanish on the next cold start |
+
+Both implement the same `read`/`write`/`update`/`scopes`/`forget` contract, so no
+module knows which is in use. The filesystem backend writes via `mkstemp` +
+`os.replace`; the remote backend PUTs JSON with `x-upsert`, keeps the
+`_scopes.json` index in the bucket, and **never caches a document whose write
+failed** — a dashboard that says "saved" over a dead backend is the bug this
+avoids. Selected by `MODULE_STORE_URL` / `MODULE_STORE_TOKEN`; empty keeps the
+filesystem default, so nothing changes for an existing deployment.
+
+`POSTGRES` is the other half of the deployment story: the schema compiles for the
+Postgres dialect in the test suite, the single Alembic revision renders Postgres
+SQL, and `alembic check` against a database built by that revision reports no
+drift.
+
 ## 10. Explicit gaps (not silently missing)
 
 * **Real voice-chat streaming** needs `pytgcalls` + a signalling path; neither is
@@ -371,7 +393,11 @@ every change.
   (the sandbox blocks it); the code path is exercised against a stub in
   `tests/test_toolchain.py`.
 * **Payments/subscriptions** from the saver upstream were not ported.
-* **Postgres-specific behaviour** is untested here (SQLite in the sandbox).
+* **Postgres runtime behaviour** is only *partly* verified: the schema compiles
+  for the Postgres dialect, the Alembic revision renders Postgres SQL, and
+  `alembic check` shows no drift — but live Postgres was not available in this
+  sandbox, so concurrency, `JSONB` operators and connection pooling under load
+  remain unexercised. Do not read "compiles" as "load-tested".
 
 ### 10.1 What became real
 
