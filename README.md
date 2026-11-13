@@ -349,6 +349,12 @@ Everything is environment driven — see `.env.example`. Key settings:
   `scheduler` and one `watchdog`. Distributed locks make duplicate schedulers safe.
 - **Maintenance mode:** `POST /api/v1/owner/maintenance?enabled=true` returns `503` for every
   non-health route.
+- **Startup fails loudly, never quietly:** a stale schema (missing column) refuses to boot when
+  Alembic owns the schema, and production refuses to boot without `SECRET_KEY`. Both were
+  500-after-boot bugs first; see `docs/DEPLOYMENT.md` §5.
+- **Dependency gate:** Vercel rejects a deploy when `next` has a known advisory even though the
+  build succeeds. `tests/test_docs_contract.py` checks the pins in `webapp/package-lock.json`, so
+  a stale framework version fails the suite instead of only failing a deploy.
 
 ---
 
