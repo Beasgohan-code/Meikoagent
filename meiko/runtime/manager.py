@@ -16,6 +16,7 @@ Design constraints honoured here:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import platform
 import socket
@@ -35,6 +36,23 @@ from meiko.logging_setup import get_logger
 from meiko.services.core import BotService
 
 log = get_logger("runtime.manager")
+
+#: How long a start claim protects a bot before it is considered abandoned.  A
+#: crashed worker must not lock its bots out forever, but a start takes seconds, so
+#: a minute is short enough to recover and long enough not to collide.
+START_CLAIM_TTL = 60
+
+
+class BotClaimedError(RuntimeError):
+    """Another worker owns this bot.  Starting it here would double-poll the token."""
+
+    def __init__(self, bot_id: int, worker: int | None) -> None:
+        self.bot_id = bot_id
+        self.worker = worker
+        super().__init__(
+            f"bot {bot_id} is already hosted by worker {worker}; "
+            "Telegram allows exactly one long poll per token"
+        )
 
 
 @dataclass
@@ -100,6 +118,8 @@ class WorkerManager:
             worker.last_heartbeat_at = datetime.utcnow()
             worker.current_load = len(self.state.applications)
             worker.status = "running"
+        for bot_id in list(self.state.applications):
+            await self.renew_claim(bot_id)
         self.state.last_heartbeat = time.time()
 
     async def heartbeat_loop(self, interval: int | None = None) -> None:
@@ -163,18 +183,34 @@ class WorkerManager:
                         "note": "connect or replace the token, then start again",
                     }
 
+            claim = await self.claim(bot_id)
+            if not claim["acquired"]:
+                if claim["reason"] == "running_elsewhere":
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"bot is already hosted by worker {claim['worker']}; "
+                            "starting it here would make two workers poll one token"
+                        ),
+                        "claimed_by": claim["worker"],
+                    }
+                return {"status": "error", "error": "another instance is starting this bot"}
+
             async with get_cache().lock(f"bot-start:{bot_id}", timeout=30) as acquired:
                 if not acquired:
+                    await self.release(bot_id)
                     return {"status": "error", "error": "another instance is starting this bot"}
                 try:
                     application = await load_bot_application(bot_id)
                 except Exception as exc:
+                    await self.release(bot_id)
                     return {"status": "error", "error": str(exc)}
                 try:
                     await application.start_polling()
                 except Exception as exc:
                     log.exception("failed to start bot %s", bot_id)
                     self._record_crash(bot_id)
+                    await self.release(bot_id)
                     async with session_scope() as session:
                         bot = await session.get(BotAccount, bot_id)
                         if bot is not None:
@@ -201,6 +237,7 @@ class WorkerManager:
     async def stop(self, bot_id: int) -> bool:
         async with self._lock:
             application = self.state.applications.pop(bot_id, None)
+            await self.release(bot_id)
             if application is not None:
                 try:
                     await application.stop()
@@ -216,6 +253,96 @@ class WorkerManager:
                         session, "bot.stopped", f"bot {bot_id} stopped", self.state.worker_id, bot_id
                     )
             return application is not None
+
+    # -- distributed claim -------------------------------------------------
+    def _claim_key(self, bot_id: int) -> str:
+        return f"bot-claim:{bot_id}"
+
+    async def claim(self, bot_id: int) -> dict[str, Any]:
+        """Atomically reserve a bot for this worker.
+
+        The start lock only serialises the *starting* of a bot; once the lock is
+        released a second worker would happily start the same token, and Telegram
+        then delivers every update to whichever poll wins — with two workers that
+        means split traffic and duplicated side effects.  The claim outlives the
+        lock and records which worker owns the bot, so a second worker is refused
+        with a reason instead of quietly double-polling.
+
+        The claim is keyed on the token fingerprint as well as the id: if a bot
+        row is deleted and re-created with the same token, the old claim must not
+        be inherited by an unrelated bot.
+        """
+        from meiko.cache import MemoryBackend, get_cache
+        from meiko.db.base import session_scope
+
+        cache = get_cache()
+        async with session_scope() as session:
+            bot = await session.get(BotAccount, bot_id)
+            fingerprint = bot.token_fingerprint if bot is not None else None
+            holder = bot.worker_id if bot is not None else None
+
+        # A bot the database says is hosted elsewhere by a worker that is *not*
+        # this one is refused outright.
+        if holder is not None and holder != self.state.worker_id and bot is not None:
+            if bot.status in ("running", "starting"):
+                return {"acquired": False, "reason": "running_elsewhere", "worker": holder}
+
+        if isinstance(cache.backend, MemoryBackend):
+            # Single process: the in-process lock already serialises starts.
+            return {"acquired": True, "reason": "single_process"}
+
+        acquired = await cache.backend.client.set(
+            cache.key(self._claim_key(bot_id)),
+            json.dumps(
+                {
+                    "worker_id": self.state.worker_id,
+                    "worker_name": self.state.name,
+                    "fingerprint": fingerprint,
+                    "at": time.time(),
+                }
+            ),
+            nx=True,
+            ex=START_CLAIM_TTL,
+        )
+        if acquired:
+            return {"acquired": True, "reason": "claimed"}
+        owner = await cache.get(self._claim_key(bot_id)) or {}
+        return {
+            "acquired": False,
+            "reason": "running_elsewhere",
+            "worker": owner.get("worker_id"),
+        }
+
+    async def renew_claim(self, bot_id: int) -> None:
+        """Refresh the lease for a bot this worker is actively polling."""
+        from meiko.cache import MemoryBackend, get_cache
+
+        cache = get_cache()
+        if isinstance(cache.backend, MemoryBackend):
+            return
+        await cache.set(
+            self._claim_key(bot_id),
+            {
+                "worker_id": self.state.worker_id,
+                "worker_name": self.state.name,
+                "at": time.time(),
+            },
+            ttl=START_CLAIM_TTL,
+        )
+
+    async def release(self, bot_id: int) -> None:
+        """Drop the claim, so another worker may host this bot."""
+        from meiko.cache import MemoryBackend, get_cache
+
+        cache = get_cache()
+        if isinstance(cache.backend, MemoryBackend):
+            return
+        try:
+            holder = await cache.get(self._claim_key(bot_id)) or {}
+            if holder.get("worker_id") in (None, self.state.worker_id):
+                await cache.delete(self._claim_key(bot_id))
+        except Exception:  # pragma: no cover - cache hiccups must not break stop
+            log.warning("could not release claim for bot %s", bot_id)
 
     async def restart(self, bot_id: int) -> dict[str, Any]:
         await self.stop(bot_id)
@@ -234,7 +361,14 @@ class WorkerManager:
                 if worker is not None:
                     worker.status = "offline"
                     worker.current_load = 0
-            await self.heartbeat()
+                    # A shutdown that still reports a recent heartbeat makes the
+                    # watchdog believe this worker is alive and keep handing it
+                    # bots, so stamp the departure explicitly.
+                    worker.last_heartbeat_at = datetime.utcnow() - timedelta(
+                        seconds=self.settings.clone_heartbeat_seconds * 2
+                    )
+            self.state.worker_id = None
+            self.state.last_heartbeat = 0.0
 
     # -- health ----------------------------------------------------------
     async def health(self, bot_id: int) -> dict[str, Any]:

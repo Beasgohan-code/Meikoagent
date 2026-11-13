@@ -269,7 +269,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 940 tests
+python -m pytest -q          # 961 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -282,6 +282,7 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
+| `tests/test_bot_hosting.py` | token never leaves the API, encrypted+fingerprinted at rest, per-owner/bot isolation, one-poller claims, worker offline on shutdown, recovery resumes only what should run |
 | `tests/test_command_studio.py` | command registry/metadata, per-bot overrides (no handler repointing), real execution log + stats, dry-run checks, import/export |
 | `tests/test_plugin_marketplace.py` | source URL policy, static import inspection (never executes setup.py/hooks), licence + dependency allowlists, owner review → approve → install gate |
 | `tests/test_plugin_authz.py` | the three plugin authorization levels: global scope is owner-only, another tenant's installation is a 404, group scope needs the owning bot, `/plugins/effective` reports runtime state |

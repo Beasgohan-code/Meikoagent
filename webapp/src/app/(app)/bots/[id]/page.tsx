@@ -18,7 +18,16 @@ import {
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import { api, formatDate, relativeTime } from "@/lib/api";
-import type { Bot, BotHealth, Group, PluginInstallation, Workflow } from "@/lib/types";
+import type {
+  Bot,
+  BotHealth,
+  BotLogs,
+  BotTasks,
+  BotUsage,
+  Group,
+  PluginInstallation,
+  Workflow,
+} from "@/lib/types";
 import {
   Badge,
   Card,
@@ -31,10 +40,12 @@ import {
 } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
-type Tab = "overview" | "groups" | "plugins" | "automation" | "settings";
+type Tab = "overview" | "logs" | "resources" | "groups" | "plugins" | "automation" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "logs", label: "Logs" },
+  { id: "resources", label: "Resources" },
   { id: "groups", label: "Groups" },
   { id: "plugins", label: "Plugins" },
   { id: "automation", label: "Automation" },
@@ -66,6 +77,23 @@ export default function BotDetailPage() {
   const workflows = useQuery({
     queryKey: ["workflows", botId],
     queryFn: () => api.get<Workflow[]>(`/bots/${botId}/workflows`),
+  });
+  const logs = useQuery({
+    queryKey: ["bot-logs", botId],
+    queryFn: () => api.get<BotLogs>(`/bots/${botId}/logs?limit=100`),
+    enabled: tab === "logs",
+    refetchInterval: tab === "logs" ? 15_000 : false,
+  });
+  const usage = useQuery({
+    queryKey: ["bot-usage", botId],
+    queryFn: () => api.get<BotUsage>(`/bots/${botId}/usage`),
+    enabled: tab === "resources",
+    refetchInterval: tab === "resources" ? 20_000 : false,
+  });
+  const tasks = useQuery({
+    queryKey: ["bot-tasks", botId],
+    queryFn: () => api.get<BotTasks>(`/bots/${botId}/tasks`),
+    enabled: tab === "resources",
   });
 
   const synchronize = () => {
@@ -239,6 +267,156 @@ export default function BotDetailPage() {
         </div>
       ) : null}
 
+      {tab === "logs" ? (
+        <Card>
+          <SectionHeader
+            title="Runtime log"
+            description="Events recorded for this bot by the worker hosting it. Newest first."
+            action={
+              <button className="btn-ghost" onClick={() => logs.refetch()} disabled={logs.isFetching}>
+                <RefreshCw className="h-4 w-4" /> Refresh
+              </button>
+            }
+          />
+          {logs.isLoading ? <Skeleton className="mt-3 h-40" /> : null}
+          {logs.isError ? <ErrorNote message="Logs could not be loaded." onRetry={() => logs.refetch()} /> : null}
+          {logs.data ? (
+            <>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {Object.entries(logs.data.kinds).map(([kind, count]) => (
+                  <span
+                    key={kind}
+                    className="rounded-full border border-white/[0.08] bg-white/[0.02] px-2 py-0.5 font-mono text-[11px] text-slate-400"
+                  >
+                    {kind} \u00b7 {count}
+                  </span>
+                ))}
+              </div>
+              {logs.data.items.length === 0 ? (
+                <EmptyState title="No events yet" description="Start the bot and its lifecycle events appear here." />
+              ) : (
+                <div className="mt-3 divide-y divide-white/[0.04] overflow-hidden rounded-xl border border-white/[0.06]">
+                  {logs.data.items.map((row) => (
+                    <div key={row.id} className="flex items-start gap-3 px-3 py-2">
+                      <span
+                        className={cn(
+                          "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+                          row.severity === "error"
+                            ? "bg-rose-400"
+                            : row.severity === "warning"
+                              ? "bg-amber-400"
+                              : "bg-slate-500",
+                        )}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm text-slate-200">{row.message}</p>
+                        <p className="font-mono text-[11px] text-slate-500">
+                          {row.kind}
+                          {row.worker_id ? ` \u00b7 worker ${row.worker_id}` : ""}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-[11px] text-slate-500">{relativeTime(row.created_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {tab === "resources" ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <SectionHeader title="Resource usage" description="Reported by the worker currently hosting the bot." />
+            {usage.isLoading ? <Skeleton className="mt-3 h-32" /> : null}
+            {usage.isError ? <ErrorNote message="Usage could not be loaded." onRetry={() => usage.refetch()} /> : null}
+            {usage.data ? (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Info
+                  label="Hosted"
+                  value={usage.data.runtime.hosted_here ? "on this worker" : "elsewhere or stopped"}
+                />
+                <Info label="Uptime" value={`${Math.floor(usage.data.runtime.uptime_seconds / 60)} min`} />
+                <Info label="Plugins" value={String(usage.data.runtime.plugins)} />
+                <Info label="Runtime events" value={String(usage.data.events.runtime_events)} />
+                {usage.data.runtime.process ? (
+                  <>
+                    <Info label="Resident memory" value={`${usage.data.runtime.process.max_rss_mb} MB`} />
+                    <Info label="CPU time" value={`${usage.data.runtime.process.cpu_seconds}s`} />
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {usage.data?.runtime.process ? (
+              <p className="mt-3 text-[11px] text-slate-500">{usage.data.runtime.process.note}</p>
+            ) : null}
+          </Card>
+
+          <Card>
+            <SectionHeader title="Storage" description="On-disk and accounted bytes for this bot." />
+            {usage.data ? (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between rounded-lg border border-white/[0.06] px-3 py-2 text-sm">
+                  <span className="text-slate-400">On disk</span>
+                  <span className="font-mono text-slate-200">{formatBytes(usage.data.storage.disk_total_bytes)}</span>
+                </div>
+                {Object.entries(usage.data.storage.disk).map(([name, value]) => (
+                  <div key={name} className="flex items-center justify-between px-3 text-xs text-slate-500">
+                    <span>{name}</span>
+                    <span className="font-mono">{value.exists ? formatBytes(value.bytes) : "\u2014"}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between rounded-lg border border-white/[0.06] px-3 py-2 text-sm">
+                  <span className="text-slate-400">Accounted</span>
+                  <span className="font-mono text-slate-200">
+                    {formatBytes(usage.data.storage.accounted_total_bytes)}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+          </Card>
+
+          <Card className="lg:col-span-2">
+            <SectionHeader title="Task history" description="Scheduled and past runs for this bot." />
+            {tasks.isLoading ? <Skeleton className="mt-3 h-24" /> : null}
+            {tasks.data && tasks.data.items.length === 0 ? (
+              <EmptyState title="No tasks" description="Schedules you create for this bot will be listed here." />
+            ) : null}
+            {tasks.data && tasks.data.items.length > 0 ? (
+              <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.06]">
+                <table className="w-full text-sm">
+                  <thead className="bg-white/[0.02] text-left text-[11px] uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Task</th>
+                      <th className="px-3 py-2">Kind</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Attempts</th>
+                      <th className="px-3 py-2">Last run</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.04]">
+                    {tasks.data.items.map((task) => (
+                      <tr key={task.id}>
+                        <td className="px-3 py-2 text-slate-200">{task.name}</td>
+                        <td className="px-3 py-2 text-slate-400">{task.kind ?? "\u2014"}</td>
+                        <td className="px-3 py-2">
+                          <Badge status={task.status ?? "pending"}>{task.status ?? "pending"}</Badge>
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-slate-400">
+                          {task.attempts}/{task.max_attempts}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-500">{relativeTime(task.last_run_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </Card>
+        </div>
+      ) : null}
+
       {tab === "groups" ? <BotGroups botId={botId} /> : null}
       {tab === "plugins" ? <BotPlugins botId={botId} data={plugins.data} loading={plugins.isLoading} onChange={synchronize} /> : null}
       {tab === "automation" ? (
@@ -276,6 +454,18 @@ export default function BotDetailPage() {
       {tab === "settings" ? <BotSettings bot={record} onSaved={synchronize} onDeleted={() => router.push("/bots")} /> : null}
     </div>
   );
+}
+
+function formatBytes(value: number): string {
+  if (!value) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 function Info({ label, value }: { label: string; value: string }) {

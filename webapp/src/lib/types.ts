@@ -49,6 +49,57 @@ export type BotHealth = {
   note: string | null;
 };
 
+export type BotLogEntry = {
+  id: number;
+  kind: string;
+  severity: string;
+  message: string;
+  worker_id: number | null;
+  data: Record<string, unknown>;
+  created_at: string | null;
+};
+
+export type BotLogs = {
+  bot_id: number;
+  count: number;
+  kinds: Record<string, number>;
+  items: BotLogEntry[];
+};
+
+export type BotUsage = {
+  bot_id: number;
+  runtime: {
+    hosted_here: boolean;
+    worker_id: number | null;
+    uptime_seconds: number;
+    plugins: number;
+    handlers: number | null;
+    process: { max_rss_mb: number; cpu_seconds: number; pid: number; note: string } | null;
+  };
+  storage: {
+    disk: Record<string, { exists: boolean; bytes: number }>;
+    disk_total_bytes: number;
+    accounted_bytes: Record<string, number>;
+    accounted_total_bytes: number;
+  };
+  events: { runtime_events: number };
+};
+
+export type BotTask = {
+  id: number;
+  name: string;
+  kind: string | null;
+  status: string | null;
+  cron: string | null;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  last_run_at: string | null;
+  next_run_at: string | null;
+};
+
+export type BotTasks = { bot_id: number; count: number; items: BotTask[] };
+
 export type Group = {
   id: number;
   bot_id: number;

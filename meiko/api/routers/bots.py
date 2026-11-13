@@ -315,3 +315,203 @@ async def sync_commands(bot_id: int, auth: CurrentAuth, session: SessionDep) -> 
         "bot.commands_synced", actor_user_id=auth.user.id, target_type="bot", target_id=bot.id
     )
     return {"synced": len(commands), "commands": commands}
+
+
+# ---------------------------------------------------------------- runtime detail
+# Everything below answers a question the hosted-bot screen asks ("what is this
+# bot doing, what did it log, how much is it using, what did it cost in storage")
+# from real rows and the live runtime, never from an inferred status.
+
+
+async def _owned_bot(bot_id: int, auth: CurrentAuth, session: SessionDep) -> BotAccount:
+    try:
+        return await BotService(session).get(bot_id, auth.user.id)
+    except NotFound as exc:
+        raise error(404, "not_found", "bot not found") from exc
+
+
+@router.get("/{bot_id}/logs", response_model=dict)
+async def bot_logs(
+    bot_id: int, auth: CurrentAuth, session: SessionDep, limit: int = 50, kind: str | None = None
+) -> dict[str, Any]:
+    """This bot's runtime log.
+
+    Rows are this tenant's events for *this* bot; the query is scoped by bot id,
+    which is itself only reachable through ownership, so one owner can never read
+    another owner's log stream.
+    """
+    from meiko.db.models import RuntimeEvent
+
+    await _owned_bot(bot_id, auth, session)
+    limit = max(1, min(limit, 500))
+    stmt = select(RuntimeEvent).where(RuntimeEvent.bot_id == bot_id)
+    if kind:
+        stmt = stmt.where(RuntimeEvent.kind == kind)
+    rows = (
+        await session.scalars(stmt.order_by(RuntimeEvent.created_at.desc()).limit(limit))
+    ).all()
+    return {
+        "bot_id": bot_id,
+        "count": len(rows),
+        "kinds": await _log_kinds(session, bot_id),
+        "items": [
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "severity": row.severity,
+                "message": row.message,
+                "worker_id": row.worker_id,
+                "data": row.data or {},
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+async def _log_kinds(session: SessionDep, bot_id: int) -> dict[str, int]:
+    from meiko.db.models import RuntimeEvent
+
+    rows = (
+        await session.execute(
+            select(RuntimeEvent.kind, func.count(RuntimeEvent.id))
+            .where(RuntimeEvent.bot_id == bot_id)
+            .group_by(RuntimeEvent.kind)
+        )
+    ).all()
+    return {kind: count for kind, count in rows}
+
+
+@router.get("/{bot_id}/usage", response_model=dict)
+async def bot_usage(bot_id: int, auth: CurrentAuth, session: SessionDep) -> dict[str, Any]:
+    """Live resource usage and storage footprint for one bot.
+
+    Memory/CPU come from the hosting process for *this* application when it runs
+    here; when the bot is hosted by another worker the response says so instead of
+    reporting zero as if the bot were idle.
+    """
+    import os
+
+    from meiko.db.models import RuntimeEvent
+
+    await _owned_bot(bot_id, auth, session)
+    manager = get_worker_manager()
+    application = manager.state.applications.get(bot_id)
+    snapshot = application.health() if application is not None else {}
+    runtime: dict[str, Any] = {
+        "hosted_here": application is not None,
+        "worker_id": manager.state.worker_id if application is not None else None,
+        "uptime_seconds": snapshot.get("uptime_seconds", 0),
+        "plugins": len(snapshot.get("plugins", [])),
+        "handlers": snapshot.get("handlers"),
+    }
+    if application is not None:
+        # Real numbers for this process; labelled as process-wide because a single
+        # Python process hosts several bots and cannot attribute RSS per bot.
+        try:
+            import resource
+
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            runtime["process"] = {
+                "max_rss_mb": round(usage.ru_maxrss / 1024, 1),
+                "cpu_seconds": round(usage.ru_utime + usage.ru_stime, 2),
+                "pid": os.getpid(),
+                "note": "process-wide; shared by the bots on this worker",
+            }
+        except Exception:  # pragma: no cover - platform dependent
+            runtime["process"] = None
+    storage = await _storage_footprint(session, bot_id)
+    events = await session.scalar(
+        select(func.count(RuntimeEvent.id)).where(RuntimeEvent.bot_id == bot_id)
+    )
+    return {
+        "bot_id": bot_id,
+        "runtime": runtime,
+        "storage": storage,
+        "events": {"runtime_events": int(events or 0)},
+    }
+
+
+async def _storage_footprint(session: SessionDep, bot_id: int) -> dict[str, Any]:
+    """Bytes attributable to this bot, per table, from real columns."""
+    from pathlib import Path
+
+    from meiko.config import get_settings
+    from meiko.db.models import UsageRecord
+
+    folders = ["downloads", "encodes", "thumbs", "uploads", "sessions"]
+    disk: dict[str, Any] = {}
+    total = 0
+    for name in folders:
+        path = Path(get_settings().data_dir) / "bots" / str(bot_id) / name
+        size = 0
+        if path.exists():
+            for entry in path.rglob("*"):
+                if entry.is_file():
+                    size += entry.stat().st_size
+        disk[name] = {"exists": path.exists(), "bytes": size}
+        total += size
+    # Storage accounted per metric, from the usage ledger the media modules
+    # already write to (bytes_downloaded / bytes_stored), not from a guess.
+    rows = (
+        await session.execute(
+            select(UsageRecord.metric, func.sum(UsageRecord.quantity))
+            .where(
+                UsageRecord.bot_id == bot_id,
+                UsageRecord.metric.in_(("bytes_stored", "bytes_downloaded", "bytes_encoded")),
+            )
+            .group_by(UsageRecord.metric)
+        )
+    ).all()
+    accounted = {metric: float(quantity or 0) for metric, quantity in rows}
+    return {
+        "disk": disk,
+        "disk_total_bytes": total,
+        "accounted_bytes": accounted,
+        "accounted_total_bytes": int(sum(accounted.values())),
+    }
+
+
+@router.get("/{bot_id}/tasks", response_model=dict)
+async def bot_tasks(
+    bot_id: int, auth: CurrentAuth, session: SessionDep, limit: int = 50
+) -> dict[str, Any]:
+    """Scheduled and historical jobs for this bot (real rows, real runs)."""
+    from meiko.db.models import ScheduledTask
+
+    await _owned_bot(bot_id, auth, session)
+    rows = (
+        await session.scalars(
+            select(ScheduledTask)
+            .where(ScheduledTask.bot_id == bot_id)
+            .order_by(ScheduledTask.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+        )
+    ).all()
+    return {
+        "bot_id": bot_id,
+        "count": len(rows),
+        "items": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "kind": getattr(row, "kind", None),
+                "status": getattr(row, "status", None),
+                "cron": getattr(row, "cron", None),
+                "attempts": row.attempts,
+                "max_attempts": row.max_attempts,
+                "last_error": row.last_error,
+                "last_run_at": (
+                    row.last_run_at.isoformat()
+                    if getattr(row, "last_run_at", None)
+                    else None
+                ),
+                "next_run_at": (
+                    row.next_run_at.isoformat()
+                    if getattr(row, "next_run_at", None)
+                    else None
+                ),
+            }
+            for row in rows
+        ],
+    }
