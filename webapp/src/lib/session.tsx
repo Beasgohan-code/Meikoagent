@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { api, clearSession, getStoredUser, getToken, setSession } from "./api";
+import { api, clearSession, getStoredUser, setSession } from "./api";
 import type { User } from "./types";
 
 type SessionState = {
@@ -23,11 +23,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   const refresh = useCallback(async () => {
-    if (!getToken()) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
+    // No client-side token to check any more: `/auth/me` over the cookie is the
+    // only authority on whether the session is alive.
     try {
       const me = await api.me();
       setUser(me);

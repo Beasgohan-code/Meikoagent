@@ -74,6 +74,77 @@ class MaintenanceMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Defence-in-depth headers for every API response.
+
+    The console is served by Next.js, which sets its own headers; these cover the
+    API itself (and any future server-rendered response), so a browser that lands
+    on an API URL cannot be framed or sniffed into something else.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+        )
+        if get_settings().is_production:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
+
+
+class OriginGuardMiddleware(BaseHTTPMiddleware):
+    """Rejects cross-site state changes.
+
+    The console sends its session token in an ``Authorization`` header, which a
+    browser will not attach to a cross-site request — but two other paths do not go
+    through that header: the dev-login form and any future cookie-based session.
+    For every unsafe method this middleware therefore requires that, *when* the
+    browser tells us where the request came from, that origin is trusted.  A
+    request with no ``Origin``/``Referer`` (curl, server-to-server, tests) is
+    allowed, because blocking those would break the API for legitimate clients and
+    would not stop a browser anyway.
+
+    Trusted means: same host as the request, or one of ``CORS_ORIGINS``.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        settings = get_settings()
+        if (
+            getattr(settings, "csrf_enforce", True)
+            and request.method in UNSAFE_METHODS
+            and not request.url.path.startswith("/health")
+        ):
+            origin = request.headers.get("origin") or ""
+            if not origin:
+                referer = request.headers.get("referer") or ""
+                if referer:
+                    from urllib.parse import urlparse
+
+                    parsed = urlparse(referer)
+                    origin = f"{parsed.scheme}://{parsed.netloc}"
+            if origin:
+                host = request.headers.get("host", "")
+                same_host = origin.split("://", 1)[-1] == host
+                allowed = {item.rstrip("/") for item in settings.cors_origin_list}
+                if not same_host and origin.rstrip("/") not in allowed:
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "csrf",
+                            "message": f"cross-site request refused (origin {origin!r})",
+                        },
+                    )
+        return await call_next(request)
+
+
 class TimingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         started = time.perf_counter()
@@ -99,6 +170,8 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.add_middleware(TimingMiddleware)
+    app.add_middleware(OriginGuardMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(MaintenanceMiddleware)
     app.add_middleware(
         CORSMiddleware,

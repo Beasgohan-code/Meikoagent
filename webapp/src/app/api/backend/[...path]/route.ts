@@ -20,6 +20,10 @@ async function proxy(request: Request, ctx: { params: Promise<{ path: string[] }
   const target = `${backendBase()}/api/v1/${path.join("/")}${url.search}`;
 
   const headers = new Headers();
+  // The session travels as an httpOnly cookie; the proxy must carry it both ways
+  // so the browser never has to hold the token in script-readable storage.
+  const cookie = request.headers.get("cookie");
+  if (cookie) headers.set("cookie", cookie);
   const authorization = request.headers.get("authorization");
   const apiKey = request.headers.get("x-api-key");
   const contentType = request.headers.get("content-type");
@@ -52,6 +56,8 @@ async function proxy(request: Request, ctx: { params: Promise<{ path: string[] }
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
+  const cookies = upstream.headers.getSetCookie?.() ?? [];
+  for (const value of cookies) responseHeaders.append("set-cookie", value);
   if (upstream.headers.get("content-type")?.includes("text/event-stream")) {
     responseHeaders.set("x-accel-buffering", "no");
     responseHeaders.set("connection", "keep-alive");

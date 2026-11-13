@@ -2,8 +2,10 @@
  * Typed API client for the MEIKO AGENT control plane.
  *
  * The browser only ever calls same-origin `/api/backend/*`, which Next.js
- * rewrites to the FastAPI service. Credentials live in an httpOnly-free session
- * token issued by the backend; nothing here trusts client-side identity.
+ * proxies to the FastAPI service. The session is an httpOnly cookie the backend
+ * sets, so page script cannot read it; only the (non-authoritative) user summary
+ * is kept in `localStorage` for instant rendering. Nothing here trusts
+ * client-side identity.
  */
 
 const BASE = "/api/backend";
@@ -24,6 +26,14 @@ export class ApiError extends Error {
 const TOKEN_KEY = "meiko.session";
 const USER_KEY = "meiko.user";
 
+/**
+ * Legacy accessor.
+ *
+ * Sessions now live in an httpOnly cookie set by the API and forwarded by the
+ * Next.js proxy, so the browser normally has no token to hand back. A token is
+ * still returned if an old session left one in storage, which keeps API-key style
+ * clients and in-flight sessions working until they sign in again.
+ */
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(TOKEN_KEY);
@@ -40,9 +50,12 @@ export function getStoredUser(): { id: number; first_name: string; username: str
   }
 }
 
-export function setSession(token: string, user: unknown) {
-  window.localStorage.setItem(TOKEN_KEY, token);
+export function setSession(token: string | null, user: unknown) {
+  // Deliberately not persisted: the cookie set by the API is the session. Keeping
+  // a copy here would re-introduce the XSS-readable token we just removed.
+  window.localStorage.removeItem(TOKEN_KEY);
   window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+  void token;
   window.dispatchEvent(new Event("meiko:session"));
 }
 

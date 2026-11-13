@@ -101,6 +101,14 @@ class Settings(BaseSettings):
     watchdog_enabled: bool = True
     watchdog_interval_seconds: int = 30
     rate_limit_per_minute: int = 120
+    #: When true, a configured-but-unreachable Redis is a boot failure instead of
+    #: a silent downgrade to per-process memory.  Implied by ENVIRONMENT=production.
+    require_redis: bool = False
+    #: Extra origins the browser may POST from.  Same-origin is always allowed.
+    csrf_enforce: bool = True
+    #: Force the ``Secure`` flag on the session cookie (implied by production, or
+    #: enable it when TLS terminates in front of a non-production deployment).
+    cookie_secure: bool = False
 
     # ---------------------------------------------------------------- plugins
     #: Global-scope plugin installations are a platform-owner capability.  The

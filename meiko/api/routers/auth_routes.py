@@ -8,7 +8,7 @@ from fastapi import APIRouter, Header, Request, Response, status
 from sqlalchemy import delete, select
 
 from meiko.api.auth import AuthError, AuthService
-from meiko.api.deps import AuthContext, CurrentAuth, SessionDep, client_ip, error
+from meiko.api.deps import SESSION_COOKIE, AuthContext, CurrentAuth, SessionDep, client_ip, error
 from meiko.api.schemas import (
     ApiKeyCreateRequest,
     ApiKeyCreatedResponse,
@@ -27,9 +27,37 @@ from meiko.services.core import AuditService
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def set_session_cookie(response: Response, token: str) -> None:
+    """Issue the browser session as an httpOnly cookie.
+
+    The token is still returned in the body (Telegram Mini Apps and API clients
+    cannot use cookies), but a browser never needs to keep it anywhere script can
+    read.  ``SameSite=lax`` blocks cross-site use; ``Secure`` is added whenever the
+    deployment is production *or* served over HTTPS.
+    """
+    settings = get_settings()
+    secure = settings.is_production or settings.cookie_secure
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=settings.session_ttl_seconds,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+
+
 @router.post("/telegram", response_model=SessionResponse)
 async def login_telegram(
-    payload: TelegramLoginRequest, request: Request, session: SessionDep
+    payload: TelegramLoginRequest,
+    request: Request,
+    response: Response,
+    session: SessionDep,
 ) -> SessionResponse:
     service = AuthService(session)
     try:
@@ -40,6 +68,7 @@ async def login_telegram(
         )
     except AuthError as exc:
         raise error(status.HTTP_401_UNAUTHORIZED, "invalid_telegram_login", str(exc)) from exc
+    set_session_cookie(response, token)
     return SessionResponse(
         token=token, expires_in=get_settings().session_ttl_seconds, user=UserResponse.model_validate(user)
     )
@@ -47,7 +76,10 @@ async def login_telegram(
 
 @router.post("/webapp", response_model=SessionResponse)
 async def login_webapp(
-    payload: WebAppLoginRequest, request: Request, session: SessionDep
+    payload: WebAppLoginRequest,
+    request: Request,
+    response: Response,
+    session: SessionDep,
 ) -> SessionResponse:
     service = AuthService(session)
     try:
@@ -59,6 +91,7 @@ async def login_webapp(
         )
     except AuthError as exc:
         raise error(status.HTTP_401_UNAUTHORIZED, "invalid_webapp_login", str(exc)) from exc
+    set_session_cookie(response, token)
     return SessionResponse(
         token=token, expires_in=get_settings().session_ttl_seconds, user=UserResponse.model_validate(user)
     )
@@ -66,7 +99,10 @@ async def login_webapp(
 
 @router.post("/dev", response_model=SessionResponse)
 async def login_dev(
-    payload: DevLoginRequest, request: Request, session: SessionDep
+    payload: DevLoginRequest,
+    request: Request,
+    response: Response,
+    session: SessionDep,
 ) -> SessionResponse:
     """Local development login – disabled in production."""
     settings = get_settings()
@@ -80,6 +116,7 @@ async def login_dev(
     token = await AuthService(session).create_session(
         user, user_agent=request.headers.get("user-agent", ""), ip=await client_ip(request)
     )
+    set_session_cookie(response, token)
     return SessionResponse(token=token, expires_in=settings.session_ttl_seconds, user=UserResponse.model_validate(user))
 
 
@@ -91,12 +128,21 @@ async def me(auth: CurrentAuth) -> UserResponse:
 @router.post("/logout", status_code=204)
 async def logout(
     auth: CurrentAuth,
+    request: Request,
     session: SessionDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
+    """Revoke the server-side session, whichever way the caller presented it."""
+    token = None
     if authorization and authorization.lower().startswith("bearer "):
-        await AuthService(session).revoke_session(authorization[7:].strip())
-    return Response(status_code=204)
+        token = authorization[7:].strip()
+    elif request.cookies.get(SESSION_COOKIE):
+        token = request.cookies[SESSION_COOKIE]
+    if token:
+        await AuthService(session).revoke_session(token)
+    response = Response(status_code=204)
+    clear_session_cookie(response)
+    return response
 
 
 @router.post("/logout-all", status_code=200)

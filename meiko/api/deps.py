@@ -27,6 +27,9 @@ from meiko.db.models import ApiKey, AuthSession, User
 from meiko.security.crypto import hash_api_key, verify_session
 from meiko.security.permissions import Principal, Role, role_from_string
 
+#: Name of the httpOnly session cookie issued to browsers.
+SESSION_COOKIE = "meiko_session"
+
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
 
 
@@ -103,6 +106,12 @@ async def current_auth(
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header()] = None,
 ) -> AuthContext:
+    """Resolve the caller from an API key, a bearer token, or the session cookie.
+
+    The cookie is checked last so that an explicit header always wins, and it is
+    the *preferred* browser path: an httpOnly cookie is not readable by injected
+    script, unlike the ``localStorage`` token the console used to keep.
+    """
     settings = get_settings()
     cache = get_cache()
     client = request.client.host if request.client else "unknown"
@@ -122,6 +131,12 @@ async def current_auth(
         return context
     if authorization and authorization.lower().startswith("bearer "):
         context = await _from_session(session, authorization[7:].strip())
+        if context is None:
+            raise _unauthorized("session expired or invalid")
+        return context
+    cookie_token = request.cookies.get(SESSION_COOKIE)
+    if cookie_token:
+        context = await _from_session(session, cookie_token)
         if context is None:
             raise _unauthorized("session expired or invalid")
         return context

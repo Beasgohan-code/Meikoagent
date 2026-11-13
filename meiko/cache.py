@@ -229,12 +229,26 @@ class Cache:
 _cache: Cache | None = None
 
 
+class RedisUnavailable(RuntimeError):
+    """Redis is required by this deployment but did not answer."""
+
+
 async def init_cache() -> Cache:
-    """Connect to Redis when configured, otherwise fall back to memory."""
+    """Connect to Redis when configured, otherwise fall back to memory.
+
+    Falling back is only safe when the cache is *local by design*.  With more than
+    one process (``WEB_CONCURRENCY``/replicas) or when ``REQUIRE_REDIS`` is set, an
+    in-memory cache silently breaks the things Redis exists for: rate limits
+    become per-process, job deduplication stops working and the worker heartbeat
+    registry splits into islands.  In those cases this raises instead of degrading
+    quietly — a loud failure at boot is better than a platform that only *looks*
+    consistent.
+    """
     global _cache
     if _cache is not None:
         return _cache
     settings = get_settings()
+    strict = bool(getattr(settings, "require_redis", False)) or settings.is_production
     if settings.redis_url:
         try:
             from redis.asyncio import from_url
@@ -245,7 +259,17 @@ async def init_cache() -> Cache:
             logger.info("connected to redis")
             return _cache
         except Exception as exc:
+            if strict:
+                raise RedisUnavailable(
+                    f"redis is required in this deployment but {settings.redis_url!r} "
+                    f"did not answer ({exc}); refusing to fall back to per-process memory"
+                ) from exc
             logger.warning("redis unavailable (%s) – using in-memory cache", exc)
+    elif strict:
+        raise RedisUnavailable(
+            "REDIS_URL is not set but this deployment requires shared state "
+            "(production or REQUIRE_REDIS=1); set REDIS_URL or run a single process"
+        )
     _cache = Cache(MemoryBackend(), settings.redis_namespace)
     return _cache
 

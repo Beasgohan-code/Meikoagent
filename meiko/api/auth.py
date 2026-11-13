@@ -28,10 +28,26 @@ from meiko.services.core import AuditService, UserService
 log = get_logger("api.auth")
 
 MAX_AUTH_AGE = 300  # seconds a login payload stays valid
+MAX_CLOCK_SKEW = 60  # seconds a client clock may run ahead of ours
 
 
 class AuthError(ValueError):
     """Authentication payload failed validation."""
+
+
+def _check_freshness(auth_date: int, max_age: int, label: str = "login payload") -> None:
+    """Reject stale *and* future-dated payloads.
+
+    A missing ``auth_date`` is itself suspicious — a payload with no timestamp can
+    never expire — so it is rejected rather than treated as "now".
+    """
+    now = int(time.time())
+    if not auth_date:
+        raise AuthError("missing auth_date")
+    if max_age and now - auth_date > max_age:
+        raise AuthError(f"{label} expired")
+    if auth_date - now > MAX_CLOCK_SKEW:
+        raise AuthError(f"{label} is dated in the future")
 
 
 def check_login_widget(data: dict[str, Any], bot_token: str, max_age: int = 86400) -> dict[str, Any]:
@@ -48,9 +64,7 @@ def check_login_widget(data: dict[str, Any], bot_token: str, max_age: int = 8640
     expected = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, str(received_hash)):
         raise AuthError("signature mismatch")
-    auth_date = int(data.get("auth_date", 0) or 0)
-    if max_age and time.time() - auth_date > max_age:
-        raise AuthError("login payload expired")
+    _check_freshness(int(data.get("auth_date", 0) or 0), max_age)
     return data
 
 
@@ -65,9 +79,7 @@ def check_webapp_init_data(init_data: str, bot_token: str, max_age: int = 3600) 
     expected = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, received_hash):
         raise AuthError("signature mismatch")
-    auth_date = int(pairs.get("auth_date", 0) or 0)
-    if max_age and time.time() - auth_date > max_age:
-        raise AuthError("initData expired")
+    _check_freshness(int(pairs.get("auth_date", 0) or 0), max_age, label="initData")
     user_payload = pairs.get("user")
     if user_payload:
         try:

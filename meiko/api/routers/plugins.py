@@ -314,7 +314,9 @@ async def _effective_states(session: Any, auth: Any) -> dict[int, dict[str, dict
             candidates = [
                 row for row in bot_rows if row.bot_id == bot.id and row.plugin_id == plugin.id
             ] + group_installs + [row for row in global_rows if row.plugin_id == plugin.id]
-            resolved = PluginManager.resolve_scope(candidates, slug, bot.id, None)
+            resolved = PluginManager.resolve_scope(
+                candidates, slug, bot.id, None, plugin_ids={slug: plugin.id}
+            )
             if resolved is None and group_installs:
                 # Nothing at bot/global level, but the plugin is active inside
                 # specific groups: report the group row rather than pretending
