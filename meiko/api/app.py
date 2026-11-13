@@ -41,8 +41,36 @@ STARTED_AT = time.time()
 
 
 @asynccontextmanager
+def _verify_deployment_settings(settings) -> None:
+    """Refuse to start a production deployment that cannot work.
+
+    Both of these are silent in the ordinary course of things and expensive when
+    they bite:
+
+    * a generated ``SECRET_KEY`` means every restart logs everybody out and, with
+      more than one worker, tokens minted by one process are rejected by another;
+    * session cookies marked ``Secure`` are dropped by the browser on plain HTTP, so
+      a production deployment without TLS appears to accept logins and then loses
+      them.
+    """
+    if not settings.is_production:
+        return
+    if not settings.secret_key or len(settings.secret_key) < 32:
+        raise RuntimeError(
+            "SECRET_KEY must be set to at least 32 characters in production; "
+            "a generated key invalidates every session on restart and is not shared "
+            "between workers"
+        )
+    if not settings.cookie_secure:
+        log.warning(
+            "COOKIE_SECURE is off in production: session cookies are only protected "
+            "if TLS terminates in front of this service and forwards Secure requests"
+        )
+
+
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    _verify_deployment_settings(settings)
     setup_logging("api")
     init_engine(settings)
     await create_all()

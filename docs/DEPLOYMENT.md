@@ -71,7 +71,7 @@ process, not a function. Run `start.py --service worker` (or the combined
 
 | variable | why it exists |
 | --- | --- |
-| `SECRET_KEY` | session signing; generated if empty, so **set it** or every deploy invalidates sessions |
+| `SECRET_KEY` | session signing. **Required in production** (32+ chars): the API refuses to boot without it, because a generated key logs everyone out on restart and is not shared between workers |
 | `ENCRYPTION_KEY` | Fernet key sealing bot tokens; if it changes, stored tokens cannot be decrypted |
 | `DATABASE_URL` | `postgresql+asyncpg://…` in production, `sqlite+aiosqlite://…` locally |
 | `REDIS_URL` | distributed locks, job deduplication, worker registry and cache. **Required for any multi-process deployment** — in production (or with `REQUIRE_REDIS=1`) the API refuses to boot without it rather than silently running on per-process memory |

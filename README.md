@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1030 tests
+python -m pytest -q          # 1033 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 

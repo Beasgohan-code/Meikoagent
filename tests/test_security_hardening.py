@@ -407,3 +407,34 @@ class TestEffectivePluginTruth:
     async def _login_headers(self, client, telegram_id: int) -> dict:
         response = await client.post("/api/v1/auth/dev", json={"telegram_id": telegram_id})
         return {"Authorization": f"Bearer {response.json()['token']}"}
+
+
+class TestProductionRefusesUnusableSettings:
+    """A generated SECRET_KEY in production silently breaks every session."""
+
+    def test_production_without_a_secret_key_refuses_to_start(self, monkeypatch):
+        import pytest as _pytest
+
+        from meiko.api.app import _verify_deployment_settings
+        from meiko.config import Settings
+
+        settings = Settings()
+        object.__setattr__(settings, "environment", "production")
+        object.__setattr__(settings, "secret_key", "short")
+        with _pytest.raises(RuntimeError, match="SECRET_KEY"):
+            _verify_deployment_settings(settings)
+
+    def test_production_with_a_secret_key_is_allowed(self, monkeypatch):
+        from meiko.api.app import _verify_deployment_settings
+        from meiko.config import Settings
+
+        settings = Settings()
+        object.__setattr__(settings, "environment", "production")
+        object.__setattr__(settings, "secret_key", "k" * 48)
+        _verify_deployment_settings(settings)
+
+    def test_development_is_never_blocked(self):
+        from meiko.api.app import _verify_deployment_settings
+        from meiko.config import Settings
+
+        _verify_deployment_settings(Settings())

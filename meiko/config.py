@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     app_name: str = "MEIKO AGENT"
     environment: Literal["development", "testing", "production"] = "development"
     debug: bool = False
+    #: Signing key for sessions.  A random default is fine for one process, but it
+    #: changes on every restart and on every *worker*, so a multi-process
+    #: deployment must set it — sessions would otherwise die on restart and tokens
+    #: issued by one worker would be rejected by another. ``is_production`` makes
+    #: that a boot failure instead of a mystery.
     secret_key: str = Field(default_factory=lambda: secrets.token_urlsafe(48))
     api_prefix: str = "/api/v1"
     #: When false the schema is owned exclusively by Alembic (containers set
