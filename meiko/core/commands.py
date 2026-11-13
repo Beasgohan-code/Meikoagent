@@ -138,6 +138,37 @@ class CommandRegistry:
 registry = CommandRegistry()
 
 
+#: The commands the core router actually registers.  Kept next to the registry so
+#: the Command Studio can show the *real* core surface before any bot has started
+#: (plugin commands are added by the manager when a plugin starts).
+CORE_COMMANDS: tuple[Command, ...] = (
+    Command("start", "Start the bot and show the menu", category="core",
+            aliases=["restart_bot"], scope="private"),
+    Command("help", "Full command reference", category="core", aliases=["h"]),
+    Command("menu", "Open the inline control menu", category="core"),
+    Command("about", "What this bot is and what it can do", category="core"),
+    Command("status", "Bot and platform status", category="core"),
+    Command("cancel", "Cancel the current operation", category="core"),
+    Command("ping", "Round-trip latency check", category="core"),
+)
+
+
+def seed_core_commands() -> int:
+    """Register the core commands once (idempotent).
+
+    Plugin packages register their own commands when they start; this covers the
+    surface that exists whether or not any plugin is running, so the Studio is
+    accurate on a fresh install.
+    """
+    added = 0
+    for command in CORE_COMMANDS:
+        if registry.get(command.name) is not None:
+            continue
+        registry.register(command, override=True)
+        added += 1
+    return added
+
+
 def command(
     name: str,
     *,

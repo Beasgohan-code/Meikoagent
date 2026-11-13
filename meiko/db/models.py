@@ -494,6 +494,33 @@ class BotCommandRecord(TimestampMixin, Base):
     usage_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class CommandExecution(Base):
+    """One recorded command invocation, for the Command Studio log.
+
+    Written by the bot process, read by the webapp.  A row means "the dispatcher
+    saw this command for this bot at this time"; a *manual test* from the Studio
+    is recorded with ``source="studio"`` and never actually sent to Telegram.
+    """
+
+    __tablename__ = "command_executions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bot_id: Mapped[int] = mapped_column(
+        ForeignKey("bots.id", ondelete="CASCADE"), index=True
+    )
+    command: Mapped[str] = mapped_column(String(64), index=True)
+    chat_type: Mapped[str] = mapped_column(String(20), default="")
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    user_role: Mapped[str] = mapped_column(String(24), default="")
+    #: ok | denied | error | unknown
+    result: Mapped[str] = mapped_column(String(16), default="ok", index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="telegram")  # telegram | studio
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class Workflow(TimestampMixin, Base):
     __tablename__ = "workflows"
 

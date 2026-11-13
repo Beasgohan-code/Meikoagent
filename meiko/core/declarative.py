@@ -92,6 +92,11 @@ class DeclarativeCommand:
                 raise DeclarativeError("button url must be http(s) or tg://")
 
 
+def render_values(template: str, values: dict[str, str]) -> str:
+    """Pure substitution for dry-runs and previews (no Telegram object needed)."""
+    return TEMPLATE_RE.sub(lambda match: values.get(match.group(1), match.group(0)), template)
+
+
 def render(template: str, message_obj: Message, bot_username: str | None = None) -> str:
     """Substitute the allowed variables – no expression evaluation."""
     from meiko.ui import esc, user_mention

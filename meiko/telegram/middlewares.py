@@ -12,7 +12,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject, User
 from sqlalchemy import text
 
-from meiko.db.models import BotAccount
+from meiko.db.models import BotAccount, CommandExecution
 
 from meiko.cache import get_cache
 from meiko.db.base import session_scope
@@ -167,6 +167,80 @@ class ActivityMiddleware(BaseMiddleware):
         except Exception:  # pragma: no cover - telemetry must never break handling
             log.debug("activity record failed", exc_info=True)
         return result
+
+
+class CommandLogMiddleware(BaseMiddleware):
+    """Records every command the dispatcher actually handled.
+
+    Only messages that begin with ``/`` are recorded, and the log is written in a
+    short-lived session so a telemetry failure can never break a command.  This is
+    what the Command Studio's log and usage counts are built from - there is no
+    synthetic counter anywhere.
+    """
+
+    def __init__(self) -> None:
+        self._commands: Any = None
+
+    def _registry(self) -> Any:
+        if self._commands is None:
+            from meiko.core.commands import registry
+
+            self._commands = registry
+        return self._commands
+
+    async def __call__(self, handler, event, data):
+        from time import perf_counter
+
+        started = perf_counter()
+        result: Any = None
+        failure: str = ""
+        try:
+            result = await handler(event, data)
+            return result
+        except Exception as exc:
+            failure = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            ctx: BotRuntimeContext | None = data.get("meiko")
+            text = getattr(event, "text", None) or getattr(event, "caption", None) or ""
+            if ctx is not None and isinstance(text, str) and text.startswith("/"):
+                await self._record(
+                    ctx, event, text, int((perf_counter() - started) * 1000), failure
+                )
+
+    async def _record(
+        self, ctx: BotRuntimeContext, event: Any, text: str, duration_ms: int, failure: str
+    ) -> None:
+        name = text.lstrip("/").split()[0].split("@")[0].lower()
+        if not name:
+            return
+        chat = getattr(event, "chat", None)
+        user = getattr(event, "from_user", None)
+        registry = self._registry()
+        command = registry.get(name)
+        result = "ok"
+        if failure:
+            result = "error"
+        elif command is None:
+            result = "unknown"
+        try:
+            async with session_scope() as session:
+                session.add(
+                    CommandExecution(
+                        bot_id=ctx.bot_id,
+                        command=name[:64],
+                        chat_type=getattr(chat, "type", "") or "",
+                        chat_id=getattr(chat, "id", None),
+                        telegram_user_id=getattr(user, "id", None),
+                        user_role=(ctx.role if hasattr(ctx, "role") else ""),
+                        result=result,
+                        error=failure[:1000],
+                        duration_ms=max(0, duration_ms),
+                        source="telegram",
+                    )
+                )
+        except Exception:  # pragma: no cover - telemetry must never break handling
+            log.debug("command log write failed", exc_info=True)
 
 
 class GroupRegistryMiddleware(BaseMiddleware):

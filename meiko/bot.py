@@ -49,6 +49,7 @@ from meiko.telegram.middlewares import (
     ActivityMiddleware,
     BotRuntimeContext,
     CallbackAnswerMiddleware,
+    CommandLogMiddleware,
     ContextMiddleware,
     ErrorMiddleware,
     GroupRegistryMiddleware,
@@ -103,6 +104,7 @@ class BotApplication:
             observer.middleware(TenantMiddleware(owners))
             observer.middleware(GroupRegistryMiddleware())
             observer.middleware(CallbackAnswerMiddleware())
+        dispatcher.message.middleware(CommandLogMiddleware())
         dispatcher.message.middleware(ActivityMiddleware())
         dispatcher.message.middleware(RateLimitMiddleware(limit=30, window=10))
 

@@ -189,7 +189,7 @@ class TestPostgres:
     def test_every_table_compiles_for_postgres(self):
         from meiko.db import models
 
-        assert len(models.Base.metadata.tables) == 31
+        assert len(models.Base.metadata.tables) == 32
         for name, table in models.Base.metadata.tables.items():
             sql = str(CreateTable(table).compile(dialect=postgresql.dialect()))
             assert name in sql
