@@ -59,10 +59,23 @@ def _sessions() -> MusicSessions:
     return MusicSessions(get_module_store())
 
 
-def _linkshare() -> LinkshareService:
-    from meiko.config import get_settings
+def linkshare_signing_secret() -> str:
+    """The key that signs link claim tokens.
 
-    return LinkshareService(get_module_store(), get_settings().encryption_key or "meiko-linkshare")
+    It used to fall back to a literal constant when ``ENCRYPTION_KEY`` was empty,
+    which let anyone forge a claim for any code.  Prefer the configured key and
+    otherwise use the generated per-installation key file (persisted under
+    ``DATA_DIR``), so the fallback is secret and stable but never public.
+    """
+    from meiko.config import get_settings
+    from meiko.security.crypto import _load_or_create_key
+
+    configured = get_settings().encryption_key
+    return configured if len(configured) >= 16 else _load_or_create_key()
+
+
+def _linkshare() -> LinkshareService:
+    return LinkshareService(get_module_store(), linkshare_signing_secret())
 
 
 def _filestore() -> FileStoreService:
@@ -407,7 +420,7 @@ async def filestore_link(
                 _scope(bot_id),
                 slug,
                 payload.file_id,
-                secret=get_settings().encryption_key or "meiko-linkshare",
+                secret=linkshare_signing_secret(),
                 ttl_days=payload.ttl_days,
                 max_uses=payload.max_uses,
             )

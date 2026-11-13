@@ -156,7 +156,7 @@ class TestFileStore:
 
 class TestLinkshare:
     def test_lifecycle_states(self, store):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         link = service.create(SCOPE, url="https://x/y", owner_id=5, ttl_hours=1, max_claims=1)
         assert link.state == "active"
         claimed, reason = service.claim(SCOPE, link.code)
@@ -167,7 +167,7 @@ class TestLinkshare:
         assert service.analytics(SCOPE)["refusals"] == 1
 
     def test_revoke_requires_owner(self, store):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         link = service.create(SCOPE, url="https://x/y", owner_id=5, ttl_hours=0)
         with pytest.raises(LinkError):
             service.revoke(SCOPE, link.code, owner_id=6)
@@ -175,14 +175,14 @@ class TestLinkshare:
         assert service.get(SCOPE, link.code).state == "revoked"
 
     def test_expiry(self, store, monkeypatch):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         link = service.create(SCOPE, url="https://x/y", owner_id=5, ttl_hours=1)
         monkeypatch.setattr(time, "time", lambda: time.mktime((2030, 1, 1, 0, 0, 0, 0, 0, -1)))
         claimed, reason = service.claim(SCOPE, link.code)
         assert claimed is None and "expired" in reason
 
     def test_batch_creation_and_revocation(self, store):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         batch, links = service.create_batch(SCOPE, urls=["https://a", "https://b"], owner_id=5)
         assert batch and len(links) == 2
         assert service.revoke_batch(SCOPE, batch, owner_id=5) == 2
@@ -191,19 +191,19 @@ class TestLinkshare:
             service.revoke_batch(SCOPE, batch, owner_id=6)
 
     def test_analytics_is_honest_about_telemetry(self, store):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         payload = service.analytics(SCOPE)
         assert "Telegram does not report" in payload["note"]
 
     def test_short_token_round_trip(self, store):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         link = service.create(SCOPE, url="https://a", owner_id=5)
         token = service.short_token(SCOPE, link.code)
         assert service.resolve_token(token)["code"] == link.code
         assert service.resolve_token("nope") is None
 
     def test_unknown_scope_is_empty(self, store):
-        service = LinkshareService(store, "s")
+        service = LinkshareService(store, "test-secret-key-16chars")
         assert service.list_links("bot:404") == []
 
 
@@ -313,3 +313,50 @@ class TestMusic:
         transport = MusicTransport(MusicSessions(store))
         result = asyncio.run(transport.dispatch(1, -100, "explode"))
         assert result["applied"] is False
+
+
+class TestClaimTokensCannotBeForged:
+    """Claim tokens were signed with the literal string "meiko-linkshare".
+
+    That string is in the source, so with ENCRYPTION_KEY unset anyone could HMAC
+    their own token for any code and collect a link without being a member of the
+    required chats.  The fallback is now the generated key file and a public
+    constant is refused outright.
+    """
+
+    def test_a_short_or_public_secret_is_refused(self):
+        import pytest
+
+        from meiko.modules.linkshare import LinkshareService
+
+        for secret in ("", "meiko-linkshare", "short"):
+            with pytest.raises(ValueError, match="signing secret"):
+                LinkshareService(object(), secret)
+
+    def test_the_router_never_falls_back_to_the_public_constant(self, tmp_path, monkeypatch):
+        from meiko.api.routers import modules as modules_router
+
+        monkeypatch.setenv("ENCRYPTION_KEY", "")
+        monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+        from meiko.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            secret = modules_router.linkshare_signing_secret()
+        finally:
+            get_settings.cache_clear()
+        assert secret != "meiko-linkshare"
+        assert len(secret) >= 16
+        # stable across calls, so existing links keep verifying after a restart
+        assert modules_router.linkshare_signing_secret() == secret
+
+    def test_a_configured_key_is_used_when_present(self, monkeypatch):
+        from meiko.api.routers import modules as modules_router
+        from meiko.config import get_settings
+
+        monkeypatch.setenv("ENCRYPTION_KEY", "x" * 44)
+        get_settings.cache_clear()
+        try:
+            assert modules_router.linkshare_signing_secret() == "x" * 44
+        finally:
+            get_settings.cache_clear()

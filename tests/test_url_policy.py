@@ -102,17 +102,17 @@ class TestLinkshareUsesIt:
 
     @pytest.mark.parametrize("url", ["file:///etc/passwd", "http://127.0.0.1/x", "https://a:b@example.com/"])
     def test_create_refuses_bad_targets(self, tmp_path, url: str):
-        service = LinkshareService(ModuleStore(tmp_path / "modules"))
+        service = LinkshareService(ModuleStore(tmp_path / "modules"), "test-secret-key-16chars")
         with pytest.raises(LinkError, match="only http|private|credentials"):
             service.create("1", url=url, owner_id=1)
 
     def test_a_public_url_is_accepted_and_stored_verbatim(self, tmp_path):
-        service = LinkshareService(ModuleStore(tmp_path / "modules"))
+        service = LinkshareService(ModuleStore(tmp_path / "modules"), "test-secret-key-16chars")
         link = service.create("9", url="https://example.com/files/1.zip", owner_id=7, ttl_hours=1)
         assert link.url == "https://example.com/files/1.zip"
 
     def test_a_batch_is_refused_once_any_target_is_bad(self, tmp_path):
-        service = LinkshareService(ModuleStore(tmp_path / "modules"))
+        service = LinkshareService(ModuleStore(tmp_path / "modules"), "test-secret-key-16chars")
         with pytest.raises(LinkError):
             service.create_batch(
                 "11", urls=["https://example.com/ok.zip", "http://169.254.169.254/x"], owner_id=7

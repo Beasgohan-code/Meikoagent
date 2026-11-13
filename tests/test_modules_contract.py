@@ -200,7 +200,7 @@ class TestHonesty:
         assert HTTPDownloader().available() is True
 
     def test_linkshare_analytics_never_claims_views(self, tmp_path):
-        service = LinkshareService(ModuleStore(tmp_path), "s")
+        service = LinkshareService(ModuleStore(tmp_path), "test-secret-key-16chars")
         payload = service.analytics("bot:1")
         assert "Telegram does not report" in payload["note"]
         assert "views" not in payload
@@ -231,6 +231,6 @@ class TestTenantIsolation:
         assert PluginScope(group_id=5, bot_id=1).key == "group:5"
 
     def test_linkshare_links_are_per_bot(self, tmp_path):
-        service = LinkshareService(ModuleStore(tmp_path), "s")
+        service = LinkshareService(ModuleStore(tmp_path), "test-secret-key-16chars")
         link = service.create("bot:1", url="https://a", owner_id=1)
         assert service.get("bot:2", link.code) is None

@@ -73,7 +73,15 @@ class LinkshareService:
 
     MODULE = "linkshare"
 
-    def __init__(self, store: Any, secret: str = "meiko-linkshare") -> None:
+    def __init__(self, store: Any, secret: str) -> None:
+        if not secret or len(secret) < 16:
+            # A claim token is an HMAC over ``{code, exp}``.  Signing it with a short
+            # or well-known string means anybody can mint a working claim for any
+            # code, so refuse instead of quietly degrading.
+            raise ValueError(
+                "linkshare needs a signing secret of at least 16 characters "
+                "(set ENCRYPTION_KEY, or the key file under DATA_DIR)"
+            )
         self.store = store
         self.secret = secret
 
