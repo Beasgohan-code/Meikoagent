@@ -25,6 +25,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramConflictError, TelegramUnauthorizedError
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, Update
+from sqlalchemy import select
 
 from meiko.cache import get_cache
 from meiko.config import get_settings
@@ -63,6 +64,14 @@ from meiko.telegram.routers import owner as owner_router
 log = get_logger("bot")
 
 WidgetHandler = Callable[[Any], Awaitable[None]]
+
+
+def _grant_map(rows: list[Any]) -> dict[int, list[str]]:
+    """installation id -> granted permissions, for the runtime to honour."""
+    out: dict[int, list[str]] = {}
+    for row in rows:
+        out.setdefault(row.installation_id, []).append(row.permission)
+    return out
 
 
 @dataclass
@@ -127,6 +136,20 @@ class BotApplication:
                 plugin.slug: plugin.id
                 for plugin in (await PluginService(session).catalog())
             }
+            # Only permissions the owner actually granted are handed to the plugin.
+            # The manifest's request alone grants nothing.
+            from meiko.db.models import PluginPermissionGrant
+
+            grants = (
+                await session.scalars(
+                    select(PluginPermissionGrant).where(
+                        PluginPermissionGrant.installation_id.in_(
+                            [install.id for install in snapshot]
+                        ),
+                        PluginPermissionGrant.revoked_at.is_(None),
+                    )
+                )
+            ).all()
         result = await self.plugins.reconcile(
             bot_id=self.bot_id,
             group_id=None,
@@ -134,6 +157,7 @@ class BotApplication:
             bot=self.bot,
             dispatcher=self.dispatcher,
             plugin_ids=plugin_ids,
+            grants=_grant_map(grants),
         )
         log.info("bot %s plugin state: %s", self.bot_id, result)
         return result

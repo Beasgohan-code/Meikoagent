@@ -32,13 +32,40 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
+        # ``--sql`` mode has no live database, so a batch alter (SQLite cannot add
+        # constraints in place) cannot reflect the existing table.  Rendering needs
+        # the model definition instead, which is what copy_from supplies.
+        render_as_batch=True,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
+def include_object(obj, name, type_, reflected, compare_to):
+    """Keep autogenerate honest about what SQLite can actually store.
+
+    SQLite cannot add a foreign key to an existing table, so a constraint declared
+    in the models but created only on PostgreSQL would otherwise show up as a
+    permanently-pending migration on every development database (and fail
+    ``alembic check``).  Filtering those diffs means "no new operations" on SQLite
+    reflects reality: the column and index exist everywhere, the FK exists on the
+    dialect that can hold it.
+    """
+    if type_ in ("foreign_key_constraint", "foreign_key"):
+        # The FK is present in the models on every dialect but only creatable on
+        # PostgreSQL; see the note in revision 404947bb2f88.
+        return False
+    return True
+
+
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

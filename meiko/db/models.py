@@ -144,6 +144,15 @@ class BotAccount(TimestampMixin, Base):
     restart_count: Mapped[int] = mapped_column(Integer, default=0)
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: Set while a worker is starting/stopping this bot.  It is the database half
+    #: of the one-poller rule: a worker that finds a live lease from another
+    #: worker refuses to start the same token.
+    lease_owner: Mapped[int | None] = mapped_column(
+        ForeignKey("workers.id", ondelete="SET NULL"), nullable=True
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
 
     owner: Mapped[User] = relationship(back_populates="bots")
     groups: Mapped[list["BotGroup"]] = relationship(back_populates="bot")
@@ -383,6 +392,69 @@ class PluginInstallation(TimestampMixin, Base):
     plugin: Mapped[Plugin] = relationship()
 
 
+class PluginInstallEvent(Base):
+    """The history of what was done to an installation, and which version ran.
+
+    ``plugin_installations`` holds the *current* state of a scope; it cannot answer
+    "who enabled this, when, from which approved version, and did it fail the first
+    time".  Rows here are append-only and the install/enable/disable/rollback paths
+    write one each, so production questions are answerable after the fact.
+    """
+
+    __tablename__ = "plugin_install_events"
+    __table_args__ = (
+        Index("ix_plugin_install_events_installation_created", "installation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    installation_id: Mapped[int] = mapped_column(
+        ForeignKey("plugin_installations.id", ondelete="CASCADE"), index=True
+    )
+    #: install | enable | disable | configure | start | stop | error | rollback | uninstall
+    action: Mapped[str] = mapped_column(String(24), index=True)
+    from_state: Mapped[str] = mapped_column(String(20), default="")
+    to_state: Mapped[str] = mapped_column(String(20), default="")
+    version: Mapped[str] = mapped_column(String(32), default="")
+    #: The approved package version this installation was pinned to, when known.
+    package_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("plugin_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class PluginPermissionGrant(TimestampMixin, Base):
+    """An explicit, revocable grant of a capability a plugin declared.
+
+    A manifest asking for a permission is a *request*.  Only a row here, created by
+    whoever owns the scope, makes it real — so revoking a permission is a database
+    write that takes effect on the next reconcile instead of an edit to the
+    package.
+    """
+
+    __tablename__ = "plugin_permission_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "installation_id", "permission", name="uq_plugin_permission_grant"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    installation_id: Mapped[int] = mapped_column(
+        ForeignKey("plugin_installations.id", ondelete="CASCADE"), index=True
+    )
+    permission: Mapped[str] = mapped_column(String(48), index=True)
+    granted_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+
+
 class PluginLog(Base):
     __tablename__ = "plugin_logs"
 
@@ -504,6 +576,14 @@ class CommandExecution(Base):
 
     __tablename__ = "command_executions"
 
+    __table_args__ = (
+        # The studio's two questions are "this bot, newest first" and "this bot,
+        # this command, over time"; both are covered by a composite index that a
+        # single-column index cannot serve.
+        Index("ix_command_exec_bot_created", "bot_id", "created_at"),
+        Index("ix_command_exec_bot_command", "bot_id", "command"),
+    )
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     bot_id: Mapped[int] = mapped_column(
         ForeignKey("bots.id", ondelete="CASCADE"), index=True
@@ -539,6 +619,9 @@ class Workflow(TimestampMixin, Base):
 
 class ScheduledTask(TimestampMixin, Base):
     __tablename__ = "scheduled_tasks"
+    __table_args__ = (
+        Index("ix_scheduled_tasks_status_next", "status", "next_run_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     bot_id: Mapped[int | None] = mapped_column(
@@ -582,6 +665,7 @@ class Worker(TimestampMixin, Base):
 
 class RuntimeEvent(Base):
     __tablename__ = "runtime_events"
+    __table_args__ = (Index("ix_runtime_events_bot_created", "bot_id", "created_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     bot_id: Mapped[int | None] = mapped_column(
@@ -641,6 +725,10 @@ class WebhookDelivery(Base):
 
 class UsageRecord(Base):
     __tablename__ = "usage_records"
+    __table_args__ = (
+        Index("ix_usage_records_bot_metric_day", "bot_id", "metric", "day"),
+        Index("ix_usage_records_user_day", "user_id", "day"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)

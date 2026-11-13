@@ -21,7 +21,7 @@ import {
 import { SearchInput, Tabs } from "@/components/patterns";
 import { emoji } from "@/lib/premium-emoji";
 
-type Tab = "marketplace" | "switches" | "installed" | "logs";
+type Tab = "marketplace" | "switches" | "installed" | "logs" | "history";
 
 type PluginDetail = Plugin & { implemented: boolean; installable: boolean; note: string | null; manifest: Record<string, unknown> };
 type PluginLog = { id: number; level: string; message: string; created_at: string; installation_id: number };
@@ -134,6 +134,7 @@ function PluginsContent() {
           { id: "switches" as Tab, label: "On / Off" },
           { id: "installed" as Tab, label: "Installed", count: installations.length },
           { id: "logs" as Tab, label: "Logs" },
+          { id: "history" as Tab, label: "History" },
         ]}
         value={tab}
         onChange={setTab}
@@ -265,6 +266,8 @@ function PluginsContent() {
       ) : null}
 
       {tab === "logs" ? <PluginLogs installations={installations} /> : null}
+
+      {tab === "history" ? <PluginHistory installations={installations} /> : null}
 
       <Modal
         open={target !== null}
@@ -467,5 +470,184 @@ function PluginLogs({ installations }: { installations: PluginInstallation[] }) 
         <EmptyState title="No log entries" description="Plugin logs are written when the plugin runs inside a bot runtime." />
       )}
     </Card>
+  );
+}
+
+type InstallEvent = {
+  id: number;
+  action: string;
+  from_state: string;
+  to_state: string;
+  version: string;
+  actor_user_id: number | null;
+  message: string;
+  created_at: string | null;
+};
+
+type PermissionState = {
+  installation_id: number;
+  requested: string[];
+  granted: string[];
+  revoked: string[];
+  unknown: string[];
+  uneffective: string[];
+};
+
+/**
+ * Installation history and effective permissions.
+ *
+ * The current installation row only ever describes *now*: it cannot say who enabled
+ * a plugin, which version they enabled, or which capabilities it actually holds.
+ * Both answers come from append-only rows, so this view stays truthful after a
+ * rollback or a permission change.
+ */
+function PluginHistory({ installations }: { installations: PluginInstallation[] }) {
+  const [selected, setSelected] = useState<number | null>(installations[0]?.id ?? null);
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const history = useQuery({
+    queryKey: ["plugin-history", selected],
+    queryFn: () => api.get<{ items: InstallEvent[] }>(`/plugins/installations/${selected}/history`),
+    enabled: Boolean(selected),
+  });
+  const permissions = useQuery({
+    queryKey: ["plugin-permissions", selected],
+    queryFn: () => api.get<PermissionState>(`/plugins/installations/${selected}/permissions`),
+    enabled: Boolean(selected),
+  });
+
+  const grant = useMutation({
+    mutationFn: (permission: string) =>
+      api.put(`/plugins/installations/${selected}/permissions`, { permission }),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["plugin-permissions", selected] });
+      void queryClient.invalidateQueries({ queryKey: ["plugin-history", selected] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const revoke = useMutation({
+    mutationFn: (permission: string) =>
+      api.del(`/plugins/installations/${selected}/permissions/${permission}`),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["plugin-permissions", selected] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  if (!installations.length) {
+    return (
+      <EmptyState
+        title="No installations to inspect"
+        description="Install a plugin first; its history and permissions are recorded from that point on."
+      />
+    );
+  }
+
+  const data = permissions.data;
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card>
+        <SectionHeader
+          title="Installation history"
+          description="Append-only record of installs, state changes and configuration."
+        />
+        <select
+          className="input mt-3 max-w-[320px]"
+          value={selected ?? ""}
+          onChange={(event) => setSelected(Number(event.target.value))}
+        >
+          {installations.map((row) => (
+            <option key={row.id} value={row.id}>
+              {row.plugin?.name ?? row.plugin_id} · {row.scope} · {row.state}
+            </option>
+          ))}
+        </select>
+        {history.isLoading ? <Skeleton className="mt-3 h-40" /> : null}
+        {history.isError ? (
+          <ErrorNote message="History could not be loaded." onRetry={() => history.refetch()} />
+        ) : null}
+        {history.data && history.data.items.length === 0 ? (
+          <EmptyState title="No history yet" description="Actions on this installation will be recorded here." />
+        ) : null}
+        {history.data && history.data.items.length > 0 ? (
+          <ol className="mt-3 space-y-2">
+            {history.data.items.map((event) => (
+              <li key={event.id} className="flex items-start gap-3 rounded-lg border border-white/[0.06] px-3 py-2">
+                <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-violet-400/70" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-[11.5px] text-slate-200">{event.action}</p>
+                  <p className="text-[11px] text-slate-500">
+                    {event.from_state ? `${event.from_state} → ${event.to_state}` : event.to_state}
+                    {event.version ? ` · v${event.version}` : ""}
+                    {event.actor_user_id ? ` · user ${event.actor_user_id}` : " · system"}
+                  </p>
+                  {event.message ? <p className="text-[11px] text-slate-500">{event.message}</p> : null}
+                </div>
+                <span className="shrink-0 text-[11px] text-slate-500">{formatDate(event.created_at)}</span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+      </Card>
+
+      <Card>
+        <SectionHeader
+          title="Permissions"
+          description="What the manifest asks for versus what the platform has actually granted."
+        />
+        {error ? <ErrorNote message={error} onRetry={() => setError(null)} /> : null}
+        {permissions.isLoading ? <Skeleton className="mt-3 h-40" /> : null}
+        {data ? (
+          <div className="mt-3 space-y-2">
+            {data.requested.length === 0 ? (
+              <p className="text-xs text-slate-500">This plugin requests no permissions.</p>
+            ) : null}
+            {data.requested.map((permission) => {
+              const granted = data.granted.includes(permission);
+              return (
+                <div
+                  key={permission}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="font-mono text-xs text-slate-200">{permission}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {granted ? "granted" : "requested, not granted"}
+                    </p>
+                  </div>
+                  {granted ? (
+                    <button
+                      className="btn-ghost"
+                      onClick={() => revoke.mutate(permission)}
+                      disabled={revoke.isPending}
+                    >
+                      Revoke
+                    </button>
+                  ) : (
+                    <button
+                      className="btn-primary"
+                      onClick={() => grant.mutate(permission)}
+                      disabled={grant.isPending}
+                    >
+                      Grant
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {data.unknown.length ? (
+              <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200">
+                The manifest also asks for permissions this platform does not define:{" "}
+                {data.unknown.join(", ")}. Those are ignored, not granted.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </Card>
+    </div>
   );
 }

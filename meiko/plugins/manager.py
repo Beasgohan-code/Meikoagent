@@ -132,6 +132,10 @@ class PluginLifecycleError(PluginError):
     """Lifecycle transition refused."""
 
 
+class PluginPermissionError(PluginLifecycleError):
+    """The plugin asks for a capability its owner has not granted."""
+
+
 @dataclass
 class RunningPlugin:
     """Bookkeeping for one running plugin instance in one scope."""
@@ -268,6 +272,21 @@ class PluginManager:
                     f"plugin {slug!r} has no approved implementation; refusing to execute code"
                 )
             manifest = plugin_cls.manifest
+            if granted_permissions is not None:
+                from meiko.plugins.manifest import PERMISSIONS as _PLATFORM_PERMISSIONS
+
+                declared = [
+                    p for p in (manifest.permissions or []) if p in _PLATFORM_PERMISSIONS
+                ]
+                ungranted = [p for p in declared if p not in granted_permissions]
+                if ungranted:
+                    # Declared is not granted.  Refusing to start is the honest
+                    # answer; running with a silently reduced permission set would
+                    # let the plugin fail half-way through an operation instead.
+                    raise PluginPermissionError(
+                        f"plugin {slug} requires permissions the owner has not granted: "
+                        + ", ".join(ungranted)
+                    )
             missing = [d for d in manifest.dependencies if d not in
                        {rp.slug for rp in self._running.values()}]
             if missing:
@@ -412,6 +431,7 @@ class PluginManager:
         dispatcher: Dispatcher | None = None,
         slugs: Iterable[str] | None = None,
         plugin_ids: "dict[str, int] | None" = None,
+        grants: "dict[int, list[str]] | None" = None,
     ) -> dict[str, str]:
         """Make the runtime match the database: start what should run, stop the rest.
 
@@ -432,6 +452,7 @@ class PluginManager:
                         scope=scope,
                         bot=bot,
                         dispatcher=dispatcher,
+                        granted_permissions=(grants or {}).get(install.id),
                     )
                     result[slug] = "running"
                 except PluginLifecycleError as exc:

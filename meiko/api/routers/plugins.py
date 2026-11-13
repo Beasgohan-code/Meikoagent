@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from meiko.api.deps import CurrentAuth, SessionDep, error
@@ -519,6 +520,169 @@ async def install(
         ),
     )
     return PluginInstallationResponse.model_validate(record)
+
+
+@router.get("/installations/{installation_id}/history", response_model=dict)
+async def installation_history(
+    installation_id: int, auth: CurrentAuth, session: SessionDep, limit: int = 50
+) -> dict:
+    """Everything that happened to this installation, newest first.
+
+    The current row cannot answer "who enabled it, when, and from which version", and
+    an operator diagnosing a plugin needs exactly that.
+    """
+    record = await authorize_installation(
+        auth, session, await session.get(PluginInstallation, installation_id)
+    )
+    rows = await PluginService(session).history(record)
+    return {
+        "installation_id": record.id,
+        "state": record.state,
+        "version": record.version,
+        "count": len(rows),
+        "items": [
+            {
+                "id": row.id,
+                "action": row.action,
+                "from_state": row.from_state,
+                "to_state": row.to_state,
+                "version": row.version,
+                "package_version_id": row.package_version_id,
+                "actor_user_id": row.actor_user_id,
+                "message": row.message,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows[: max(1, min(limit, 200))]
+        ],
+    }
+
+
+@router.get("/installations/{installation_id}/permissions", response_model=dict)
+async def installation_permissions(
+    installation_id: int, auth: CurrentAuth, session: SessionDep
+) -> dict:
+    """Requested vs granted capabilities for one installation.
+
+    A manifest asking for a permission is only a request; the platform decides what
+    it will honour.  Reporting all three states (requested, granted, revoked) stops
+    the UI from implying a plugin has access it was never given.
+    """
+    from meiko.db.models import PluginPermissionGrant
+    from meiko.plugins.manifest import PERMISSIONS
+
+    record = await authorize_installation(
+        auth, session, await session.get(PluginInstallation, installation_id)
+    )
+    plugin = await session.get(Plugin, record.plugin_id)
+    requested = list(getattr(plugin, "permissions", None) or []) if plugin else []
+    grants = (
+        await session.scalars(
+            select(PluginPermissionGrant).where(
+                PluginPermissionGrant.installation_id == installation_id
+            )
+        )
+    ).all()
+    active = {g.permission for g in grants if g.revoked_at is None}
+    revoked = {
+        g.permission: (g.revoked_at.isoformat() if g.revoked_at else None) for g in grants
+    }
+    return {
+        "installation_id": installation_id,
+        "requested": requested,
+        "granted": sorted(active & set(requested)),
+        "revoked": sorted(set(revoked) - active),
+        "unknown": [p for p in requested if p not in PERMISSIONS],
+        "uneffective": sorted(set(requested) - active),
+        "known_permissions": sorted(PERMISSIONS),
+    }
+
+
+class PermissionGrantRequest(BaseModel):
+    permission: str
+    note: str = ""
+
+
+@router.put("/installations/{installation_id}/permissions", response_model=dict)
+async def grant_permission(
+    installation_id: int, payload: PermissionGrantRequest, auth: CurrentAuth, session: SessionDep
+) -> dict:
+    """Grant a capability the manifest requested - and only one it requested."""
+    from datetime import datetime as _dt
+
+    from meiko.db.models import PluginPermissionGrant
+    from meiko.plugins.manifest import PERMISSIONS
+
+    record = await authorize_installation(
+        auth, session, await session.get(PluginInstallation, installation_id)
+    )
+    plugin = await session.get(Plugin, record.plugin_id)
+    requested = set(getattr(plugin, "permissions", None) or []) if plugin else set()
+    if payload.permission not in PERMISSIONS:
+        raise error(422, "unknown_permission", f"{payload.permission!r} is not a platform permission")
+    if payload.permission not in requested:
+        raise error(
+            422,
+            "not_requested",
+            "the plugin manifest does not request this permission",
+        )
+    row = await session.scalar(
+        select(PluginPermissionGrant).where(
+            PluginPermissionGrant.installation_id == installation_id,
+            PluginPermissionGrant.permission == payload.permission,
+        )
+    )
+    if row is None:
+        row = PluginPermissionGrant(
+            installation_id=installation_id,
+            permission=payload.permission,
+            granted_by=auth.user.id,
+            note=payload.note[:500],
+        )
+        session.add(row)
+    else:
+        row.revoked_at = None
+        row.granted_by = auth.user.id
+        row.granted_at = _dt.utcnow()
+    await session.flush()
+    await AuditService(session).log(
+        "plugin.permission_granted",
+        actor_user_id=auth.user.id,
+        target_type="installation",
+        target_id=installation_id,
+        metadata=owner_metadata(auth, permission=payload.permission, scope=record.scope),
+    )
+    return {"installation_id": installation_id, "permission": payload.permission, "granted": True}
+
+
+@router.delete("/installations/{installation_id}/permissions/{permission}", response_model=dict)
+async def revoke_permission(
+    installation_id: int, permission: str, auth: CurrentAuth, session: SessionDep
+) -> dict:
+    from datetime import datetime as _dt
+
+    from meiko.db.models import PluginPermissionGrant
+
+    await authorize_installation(
+        auth, session, await session.get(PluginInstallation, installation_id)
+    )
+    row = await session.scalar(
+        select(PluginPermissionGrant).where(
+            PluginPermissionGrant.installation_id == installation_id,
+            PluginPermissionGrant.permission == permission,
+        )
+    )
+    if row is None or row.revoked_at is not None:
+        raise error(404, "not_found", "no active grant for that permission")
+    row.revoked_at = _dt.utcnow()
+    await session.flush()
+    await AuditService(session).log(
+        "plugin.permission_revoked",
+        actor_user_id=auth.user.id,
+        target_type="installation",
+        target_id=installation_id,
+        metadata=owner_metadata(auth, permission=permission),
+    )
+    return {"installation_id": installation_id, "permission": permission, "revoked": True}
 
 
 @router.patch("/installations/{installation_id}/configure", response_model=PluginInstallationResponse)

@@ -280,6 +280,27 @@ class WorkerManager:
             bot = await session.get(BotAccount, bot_id)
             fingerprint = bot.token_fingerprint if bot is not None else None
             holder = bot.worker_id if bot is not None else None
+            # A live, unexpired lease written by another worker is authoritative
+            # even if the status column is stale: the lease is the row that a
+            # crashed worker leaves behind with an expiry.
+            if (
+                bot is not None
+                and bot.lease_owner is not None
+                and bot.lease_owner != self.state.worker_id
+                and bot.lease_expires_at is not None
+                and bot.lease_expires_at > datetime.utcnow()
+            ):
+                return {
+                    "acquired": False,
+                    "reason": "running_elsewhere",
+                    "worker": bot.lease_owner,
+                }
+            if bot is not None and self.state.worker_id is not None:
+                bot.lease_owner = self.state.worker_id
+                bot.lease_expires_at = datetime.utcnow() + timedelta(
+                    seconds=START_CLAIM_TTL
+                )
+                await session.flush()
 
         # A bot the database says is hosted elsewhere by a worker that is *not*
         # this one is refused outright.
@@ -317,6 +338,19 @@ class WorkerManager:
         """Refresh the lease for a bot this worker is actively polling."""
         from meiko.cache import MemoryBackend, get_cache
 
+        # The database lease is the only one that survives a cache flush, so it is
+        # renewed on every heartbeat for every bot this worker hosts.
+        async with session_scope() as session:
+            bot = await session.get(BotAccount, bot_id)
+            if (
+                bot is not None
+                and self.state.worker_id is not None
+                and bot.lease_owner == self.state.worker_id
+            ):
+                bot.lease_expires_at = datetime.utcnow() + timedelta(
+                    seconds=START_CLAIM_TTL
+                )
+
         cache = get_cache()
         if isinstance(cache.backend, MemoryBackend):
             return
@@ -333,6 +367,14 @@ class WorkerManager:
     async def release(self, bot_id: int) -> None:
         """Drop the claim, so another worker may host this bot."""
         from meiko.cache import MemoryBackend, get_cache
+
+        async with session_scope() as session:
+            bot = await session.get(BotAccount, bot_id)
+            if bot is not None and (
+                bot.lease_owner is None or bot.lease_owner == self.state.worker_id
+            ):
+                bot.lease_owner = None
+                bot.lease_expires_at = None
 
         cache = get_cache()
         if isinstance(cache.backend, MemoryBackend):

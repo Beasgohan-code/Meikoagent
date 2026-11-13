@@ -23,7 +23,7 @@ plane, the plugin manager is the extension system and the database is the single
 | Plugins | `meiko/plugins` | typed manifests, lifecycle states, scope resolution (`group → bot → global`), tenant-isolated execution, 18 built-in plugin **packages** |
 | Runtime | `meiko/runtime` | worker manager (capacity, heartbeats, crash-loop protection, recovery), scheduler (cron + retries), watchdog (dead-runtime detection) |
 | API | `meiko/api` | FastAPI v1 control plane, bearer sessions + API keys, owner-scoped tenancy, SSE activity stream |
-| Data | `meiko/db`, `migrations` | SQLAlchemy 2 async models (33 tables), Alembic migrations, PostgreSQL primary / SQLite fallback |
+| Data | `meiko/db`, `migrations` | SQLAlchemy 2 async models (34 tables), Alembic migrations, PostgreSQL primary / SQLite fallback |
 | UI engine | `meiko/ui` | RichMessage blocks, premium emoji (`Beasgohan-code/Videl0`), buttons/styles, widgets, plain-text fallback |
 | Webapp | `webapp` | Next.js 15 console: dashboard, bots, moderation, marketplace, automation, developer, infrastructure, account, owner |
 
@@ -269,7 +269,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 961 tests
+python -m pytest -q          # 982 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -282,6 +282,8 @@ cd webapp && npx tsc --noEmit && npm run build
 | `tests/test_services.py` | user/bot/group/moderation/plugin/dashboard services |
 | `tests/test_runtime.py` | worker manager, scheduler retries, watchdog recovery |
 | `tests/test_api.py` | auth, tenancy, bots, plugins, commands, dashboard, owner, templates |
+| `tests/test_schema_migrations.py` | migrations reproduce the models (columns + indexes), downgrade/reapply, no destructive upgrade, BIGINT for Telegram ids, optional live PostgreSQL run |
+| `tests/test_plugin_schema.py` | install history, permission grant/revoke with audit trail, runtime refuses an ungranted permission, bot lease rows |
 | `tests/test_bot_hosting.py` | token never leaves the API, encrypted+fingerprinted at rest, per-owner/bot isolation, one-poller claims, worker offline on shutdown, recovery resumes only what should run |
 | `tests/test_command_studio.py` | command registry/metadata, per-bot overrides (no handler repointing), real execution log + stats, dry-run checks, import/export |
 | `tests/test_plugin_marketplace.py` | source URL policy, static import inspection (never executes setup.py/hooks), licence + dependency allowlists, owner review → approve → install gate |

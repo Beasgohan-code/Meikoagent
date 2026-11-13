@@ -854,6 +854,9 @@ class PluginService:
         )
         self.session.add(install)
         await self.session.flush()
+        await self._record(
+            install, "installed", "", "installed", actor_user_id=installed_by
+        )
         return install
 
     async def transition(self, install: PluginInstallation, state: str) -> PluginInstallation:
@@ -866,11 +869,55 @@ class PluginService:
             raise ValidationError(
                 f"cannot move plugin from {install.state} to {state}"
             )
+        previous = install.state
         install.state = state
         if state == "enabled":
             install.enabled_at = utcnow()
         await self.session.flush()
+        await self._record(install, f"state.{state}", previous, state)
         return install
+
+    async def _record(
+        self,
+        install: PluginInstallation,
+        action: str,
+        from_state: str = "",
+        to_state: str = "",
+        *,
+        actor_user_id: int | None = None,
+        message: str = "",
+    ) -> None:
+        """Append to the installation history.
+
+        ``plugin_installations`` only knows the current state; this row is what makes
+        "who enabled it, when, from which version" answerable after the fact.
+        """
+        from meiko.db.models import PluginInstallEvent
+
+        self.session.add(
+            PluginInstallEvent(
+                installation_id=install.id,
+                action=action[:24],
+                from_state=(from_state or "")[:20],
+                to_state=(to_state or install.state or "")[:20],
+                version=(install.version or "")[:32],
+                actor_user_id=actor_user_id,
+                message=(message or "")[:1000],
+            )
+        )
+        await self.session.flush()
+
+    async def history(self, install: PluginInstallation) -> list[Any]:
+        from meiko.db.models import PluginInstallEvent
+
+        rows = (
+            await self.session.scalars(
+                select(PluginInstallEvent)
+                .where(PluginInstallEvent.installation_id == install.id)
+                .order_by(PluginInstallEvent.created_at.desc())
+            )
+        ).all()
+        return list(rows)
 
     async def enable(self, install: PluginInstallation) -> PluginInstallation:
         """Enable an installation after verifying its required configuration.
@@ -892,9 +939,11 @@ class PluginService:
 
     async def disable(self, install: PluginInstallation) -> PluginInstallation:
         if install.state != "disabled":
+            previous = install.state
             install.state = "disabled"
             install.enabled_at = None
             await self.session.flush()
+            await self._record(install, "state.disabled", previous, "disabled")
         return install
 
     async def configure(self, install: PluginInstallation, values: dict[str, Any]) -> PluginInstallation:
@@ -910,9 +959,14 @@ class PluginService:
         if not missing and install.state in ("installed", "enabled", "configured"):
             install.state = "configured"
         await self.session.flush()
+        # Keys only: a history row must never store a secret the operator typed.
+        await self._record(
+            install, "configured", "", install.state, message="keys: " + ", ".join(sorted(values))
+        )
         return install
 
     async def uninstall(self, install: PluginInstallation) -> None:
+        await self._record(install, "uninstalled", install.state, "")
         await self.session.delete(install)
         await self.session.flush()
 
