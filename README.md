@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1142 tests
+python -m pytest -q          # 1151 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -416,6 +416,7 @@ could not be:
 | `$PORT` adoption | API came up on the assigned port rather than 8000 |
 | Vercel | deploy `READY`; the earlier failures were `VULNERABLE_NEXTJS_VERSION` until `next` was patched |
 | the whole Alembic chain, executed by a **real PostgreSQL 17.11** server (Supabase, `ap-south-1`) | all 125 statements applied inside one transaction, in a throwaway schema, then rolled back: **35 tables**, **19/19** required tables present, **53** foreign keys, **131** indexes, head `404947bb2f88`, `id` backed by a real `SERIAL` sequence (`meiko_verify.bots_id_seq`), timestamps stored as `timestamp without time zone` |
+| `alembic upgrade head` against the same server with the provider's own URL | before: `TypeError: connect() got an unexpected keyword argument 'sslmode'` — the migration environment built its own engine and skipped the app's URL normalisation. After: the server is reached and answers (the probe used a placeholder password, so it stops at `ConnectionResetError`, not at a `TypeError`) |
 
 The PostgreSQL run is repeatable: `alembic upgrade head --sql` renders the whole chain, and
 running that script against any empty schema proves the migration works on the target

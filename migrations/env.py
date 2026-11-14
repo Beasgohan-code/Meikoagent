@@ -9,7 +9,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from meiko.config import get_settings
-from meiko.db.base import Base
+from meiko.db.base import Base, prepare_connect_url
 from meiko.db import models  # noqa: F401  (register all tables)
 
 config = context.config
@@ -74,10 +74,20 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    # The URL needs the same treatment the application engine gives it.  Alembic's
+    # template copies every query parameter straight into asyncpg.connect(), and
+    # `?sslmode=require` — the parameter Supabase and Render tell you to use — is
+    # rejected there ("unexpected keyword argument 'sslmode'").  Migrating a managed
+    # database therefore failed before it opened a connection, even though the app
+    # itself connected fine.
+    url, connect_args = prepare_connect_url(settings, settings.migration_database_url)
+    section = dict(config.get_section(config.config_ini_section, {}))
+    section["sqlalchemy.url"] = url
     connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

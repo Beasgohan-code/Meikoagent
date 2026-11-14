@@ -139,24 +139,24 @@ class TestPreparedStatementsOffOnATransactionPooler:
 
     def test_statement_caching_is_disabled_for_a_pooled_url(self):
         from meiko.config import Settings
-        from meiko.db.base import _engine_kwargs
+        from meiko.db.base import prepare_connect_url
 
         settings = Settings(
             database_url="postgresql://postgres.ref:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres",
             environment="production",
         )
-        connect_args = _engine_kwargs(settings, settings.resolved_database_url).get("connect_args", {})
+        _, connect_args = prepare_connect_url(settings, settings.resolved_database_url)
         assert connect_args.get("statement_cache_size") == 0
 
     def test_a_direct_connection_keeps_the_cache(self):
         from meiko.config import Settings
-        from meiko.db.base import _engine_kwargs
+        from meiko.db.base import prepare_connect_url
 
         settings = Settings(
             database_url="postgresql://u:p@db.abcdefgh.supabase.co:5432/postgres",
             environment="production",
         )
-        connect_args = _engine_kwargs(settings, settings.resolved_database_url).get("connect_args", {})
+        _, connect_args = prepare_connect_url(settings, settings.resolved_database_url)
         assert "statement_cache_size" not in connect_args
 
     def test_the_ssl_connection_args_survive_the_addition(self):

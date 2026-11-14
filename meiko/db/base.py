@@ -34,6 +34,7 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
 def _engine_kwargs(settings: Settings, url: str) -> dict[str, Any]:
+    """Pool sizing, not connection arguments — see :func:`prepare_connect_url`."""
     kwargs: dict[str, Any] = {"echo": settings.db_echo, "future": True}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"timeout": 30}
@@ -45,13 +46,6 @@ def _engine_kwargs(settings: Settings, url: str) -> dict[str, Any]:
         pool_pre_ping=True,
         pool_recycle=1800,
     )
-    if settings.database_is_pooled:
-        # A transaction-mode pooler hands out a different backend connection between
-        # statements, so a statement prepared on one is executed on another and
-        # asyncpg fails with InvalidSQLStatementNameError.  Supabase and PgBouncer
-        # both require caching to be off on that endpoint; it is also pointless
-        # there, since the pooler reuses the server-side statements itself.
-        kwargs.setdefault("connect_args", {})["statement_cache_size"] = 0
     return kwargs
 
 
@@ -100,13 +94,26 @@ def _asyncpg_ssl(mode: str) -> Any:
     return True
 
 
+def prepare_connect_url(settings: Settings, url: str) -> tuple[str, dict[str, Any]]:
+    """Return the URL asyncpg accepts and the connect arguments it needs.
+
+    Used by the application engine *and* by ``migrations/env.py``.  They have to
+    agree: Alembic's template hands the URL straight to ``asyncpg.connect()``, so a
+    managed database's ``?sslmode=require`` was rejected there long after the app
+    itself had been fixed.
+    """
+    cleaned, connect_args = strip_libpq_ssl(url)
+    if settings.database_is_pooled:
+        connect_args["statement_cache_size"] = 0
+    return cleaned, connect_args
+
+
 def create_engine(settings: Settings | None = None, url: str | None = None) -> AsyncEngine:
     settings = settings or get_settings()
-    database_url = url or settings.resolved_database_url
-    database_url, ssl_connect_args = strip_libpq_ssl(database_url)
+    database_url, connect_args = prepare_connect_url(settings, url or settings.resolved_database_url)
     kwargs = _engine_kwargs(settings, database_url)
-    if ssl_connect_args:
-        kwargs.setdefault("connect_args", {}).update(ssl_connect_args)
+    if connect_args:
+        kwargs.setdefault("connect_args", {}).update(connect_args)
     engine = create_async_engine(database_url, **kwargs)
     if database_url.startswith("sqlite"):
 
