@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1110 tests
+python -m pytest -q          # 1118 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -367,6 +367,12 @@ Everything is environment driven — see `.env.example`. Key settings:
 - **Startup fails loudly, never quietly:** a stale schema (missing column) refuses to boot when
   Alembic owns the schema, and production refuses to boot without `SECRET_KEY`. Both were
   500-after-boot bugs first; see `docs/DEPLOYMENT.md` §5.
+- **Free 24/7:** run it on your own device. `scripts/termux_setup.sh` (Android) and
+  `scripts/termux_boot.sh` give a real, always-on worker with wake-lock, boot restart
+  and a data directory outside the app sandbox; a Pi or old laptop with
+  `docker compose up -d` is the same idea. Cloud free tiers sleep, and the add-ons that
+  stop them sleeping are what gets accounts suspended — `docs/HOSTING.md` ranks the
+  options and says what each one actually does.
 - **Hosting:** a bot that long-polls Telegram is a worker, not a web service. Free
   tiers sleep on inbound-traffic idleness and treat self-pinging as circumvention, so
   `keep_alive`'s timer is off by default. Read `docs/HOSTING.md` before deploying; it

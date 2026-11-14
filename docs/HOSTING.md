@@ -121,6 +121,44 @@ python start.py --service watchdog
 * Telegram itself is the thing that must reach you, so nothing needs to be public
   except the API/console. Do not open the bot worker to the internet.
 
+## Free options, honestly ranked
+
+The question is always "can I run this 24/7 for free". The honest answer for a
+long-polling Telegram bot is **your own device**, not a cloud free tier — and that is
+not a downgrade: a worker that runs where you control the network is exactly the shape
+that works.
+
+| Where | Free 24/7? | What actually happens | Use for |
+| --- | --- | --- | --- |
+| **Termux on Android** | **yes** | real Linux, no sleep, no egress limits. Android may kill the session when it reclaims memory; `termux-wake-lock` plus the Termux:Boot recipe here brings it back | the bot workers, scheduler, SQLite database — the best free option |
+| **Old laptop / Raspberry Pi** | **yes** | `docker compose up -d` and forget it; systemd restarts it | the whole stack including Postgres and Redis |
+| Render free / Railway free / Fly free | no | sleeps on idle; keeping it awake is what suspended the accounts (see above) | the *console* only, if you want a URL |
+| Oracle Cloud "Always Free" VM | usually | an actual always-on VM at no cost, but capacity is often unavailable in popular regions and accounts get re-reviewed for "idle" resources | the whole stack, if you can get one |
+| Koyeb / Zeabur / Northflank free | flaky | free web instances still sleep or are time-limited; a bot that sleeps is a bot that is down | experiments |
+| GitHub Actions cron | no | jobs are capped (minutes per month) and are killed after 6h; a bot cannot live there | nothing here |
+| Vercel free | console only | a Next.js console stays up; it cannot run Python or a poller | the console in front of an API you host elsewhere |
+
+### Termux (the one to use if "free" is a hard requirement)
+
+`scripts/termux_setup.sh` installs the toolchain the wheels need (clang, rust,
+openssl, sqlite), builds the dependencies, creates a data directory outside the app
+sandbox, starts Redis and writes a `~600` env file with generated keys. Then:
+
+```bash
+termux-wake-lock                 # stop Android from freezing the process
+bash scripts/termux_boot.sh      # migrate + start, idempotent, logs to ~/meiko.log
+```
+
+Put `scripts/termux_boot.sh` in `~/.termux/boot/` (Termux:Boot app) and the bot comes
+back after a reboot on its own. Two honest limits: the phone is not a server, so
+expect restarts after Android updates; and do **not** expose it — `AUTH_DEV_MODE=true`
+means the console trusts anyone who can reach it, so keep it on `127.0.0.1` and reach
+it over Tailscale or an SSH tunnel if you need it from another device.
+
+The web console on a phone needs Node and a production build; it is easier to keep the
+API on the phone and open `/docs`, or host the console on Vercel pointing
+`MEIKO_API_URL` at a tunnel to the phone.
+
 ## If you only want the console online
 
 The Next.js console can be hosted on the free tier indefinitely, because it is a web

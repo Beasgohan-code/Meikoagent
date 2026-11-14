@@ -209,3 +209,65 @@ class TestWebDependenciesStayPatched:
             assert f'"{name}"' in sources or f"'{name}'" in sources or name in ("next", "react", "react-dom"), (
                 f"{name} is a runtime dependency but nothing imports it"
             )
+
+
+class TestTermuxScriptsAreHonest:
+    """Termux is the recommendation for free 24/7 hosting; the scripts must match."""
+
+    @pytest.fixture(scope="class")
+    def scripts(self) -> dict[str, str]:
+        root = ROOT / "scripts"
+        return {
+            name: (root / name).read_text()
+            for name in ("termux_setup.sh", "termux_boot.sh")
+        }
+
+    def test_both_scripts_exist_and_are_executable(self):
+        for name in ("termux_setup.sh", "termux_boot.sh"):
+            path = ROOT / "scripts" / name
+            assert path.exists(), name
+            assert path.stat().st_mode & 0o111, f"{name} is not executable"
+
+    def test_they_are_valid_shell(self, scripts):
+        import subprocess
+
+        for name in scripts:
+            result = subprocess.run(
+                ["bash", "-n", str(ROOT / "scripts" / name)], capture_output=True, text=True
+            )
+            assert result.returncode == 0, f"{name}: {result.stderr}"
+
+    def test_the_setup_installs_the_toolchain_the_wheels_need(self, scripts):
+        setup = scripts["termux_setup.sh"]
+        for package in ("clang", "rust", "openssl", "libsqlite", "python"):
+            assert package in setup, f"{package} is required to build the dependencies"
+
+    def test_the_setup_generates_secrets_rather_than_shipping_them(self, scripts):
+        setup = scripts["termux_setup.sh"]
+        assert "Fernet.generate_key()" in setup
+        assert "token_urlsafe" in setup
+        assert 'chmod 600 "$ENV_FILE"' in setup
+
+    def test_the_setup_warns_about_exposing_the_console(self, scripts):
+        setup = scripts["termux_setup.sh"]
+        assert "AUTH_DEV_MODE=true" in setup
+        assert "do not expose" in setup.lower() or "do not publish" in setup.lower()
+
+    def test_boot_holds_a_wake_lock_and_survives_a_dead_redis(self, scripts):
+        boot = scripts["termux_boot.sh"]
+        assert "termux-wake-lock" in boot
+        assert "REQUIRE_REDIS=0" in boot, "one process on a phone must not die over redis"
+        assert "--service migrate" in boot
+
+    def test_boot_is_idempotent(self, scripts):
+        boot = scripts["termux_boot.sh"]
+        assert "already running" in boot
+        assert "PID_FILE" in boot
+
+    def test_the_hosting_doc_recommends_it_and_says_what_it_cannot_do(self):
+        doc = (ROOT / "docs" / "HOSTING.md").read_text()
+        assert "termux_setup.sh" in doc
+        assert "termux-wake-lock" in doc
+        # honest about the free tiers that sleep
+        assert "sleeps on idle" in doc or "sleep" in doc
+        assert "GitHub Actions" in doc
