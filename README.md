@@ -387,6 +387,31 @@ Two repository names that appeared in earlier drafts (`abe_/playeon`,
 `cantarella/save-restricted-content-bot`) do not exist; the real sources are
 `playeon/Playeon` and `abhinai2244/save-restricted-content-bot`.
 
+## How this was verified
+
+Beyond the suite, the stack was driven for real. What was actually observed, and what
+could not be:
+
+**Observed** (fresh database, `start.py --service migrate`, `AUTO_CREATE_SCHEMA=false`):
+
+| check | result |
+| --- | --- |
+| `--service migrate` on an empty database | four migrations applied, 22 plugins + 4 templates seeded |
+| API boot against that schema with `AUTO_CREATE_SCHEMA=false` | started; a stale schema refuses to boot instead |
+| production without `SECRET_KEY` / with no Redis | refuses to start, message names the missing setting |
+| `POST /bots` | `201` in **1.4 s** (was `500` on a stale schema, `7.3 s` on unreachable Telegram) |
+| all 20 console pages, owner tables, dashboard, plugins, platform | `200`, real rows |
+| command studio | `{"core":7}` categories; dry run `would_run:true, sent_to_telegram:false, executed_handler:false`; the run appears in `/commands/logs` as `source:"studio"` |
+| override that tries to repoint a handler | `422` naming the field (was a silent `200`) |
+| `GET /health`, `/health/live`, `/health/bots` | `200`, per-bot liveness block included |
+| `$PORT` adoption | API came up on the assigned port rather than 8000 |
+| Vercel | deploy `READY`; the earlier failures were `VULNERABLE_NEXTJS_VERSION` until `next` was patched |
+
+**Not verified here, and therefore not claimed:** live Telegram polling (this sandbox
+cannot reach `api.telegram.org`), a real PostgreSQL/Supabase migration (no server
+reachable from here — the URL handling is tested, the connection is not), real Redis
+(no binary), and voice-chat streaming.
+
 ## What is deliberately *not* claimed
 
 - No fabricated analytics: charts and counters render exactly what is in the database, and empty
