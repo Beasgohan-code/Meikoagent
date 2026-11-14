@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 
 from meiko.api.deps import CurrentAuth, SessionDep
 from meiko.api.schemas import ActivityItem, DashboardResponse
-from meiko.db.models import ActivityEvent, BotAccount, BotGroup, ModerationAction, UsageRecord
+from meiko.db.models import ActivityEvent, BotAccount, BotGroup, ModerationAction, UsageRecord, utcnow
 from meiko.services.core import ActivityEventService, BotService, DashboardService
 
 router = APIRouter(tags=["activity"])
@@ -74,7 +74,7 @@ async def analytics(
     service = ActivityEventService(session)
     series = await service.series(bot_ids, days=days)
     moderation_series = await service.series(bot_ids, days=days, kind_prefix="moderation")
-    since = datetime.utcnow() - timedelta(days=days)
+    since = utcnow() - timedelta(days=days)
     rows = await session.execute(
         select(ModerationAction.action, func.count())
         .where(ModerationAction.bot_id.in_(bot_ids), ModerationAction.created_at >= since)

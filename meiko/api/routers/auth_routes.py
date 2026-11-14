@@ -20,7 +20,7 @@ from meiko.api.schemas import (
     WebAppLoginRequest,
 )
 from meiko.config import get_settings
-from meiko.db.models import ApiKey, AuthSession
+from meiko.db.models import ApiKey, AuthSession, utcnow
 from meiko.security.crypto import hash_api_key
 from meiko.services.core import AuditService
 
@@ -183,7 +183,7 @@ async def revoke_api_key(key_id: int, auth: CurrentAuth, session: SessionDep) ->
         raise error(404, "not_found", "API key not found")
     from datetime import datetime
 
-    record.revoked_at = datetime.utcnow()
+    record.revoked_at = utcnow()
     await AuditService(session).log(
         "api_key.revoked", actor_user_id=auth.user.id, target_type="api_key", target_id=key_id
     )

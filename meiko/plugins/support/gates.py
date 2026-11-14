@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from meiko.db.base import session_scope
-from meiko.db.models import SystemSetting
+from meiko.db.models import SystemSetting, utcnow
 
 
 class GateDenied(PermissionError):
@@ -124,7 +124,7 @@ class CapabilityGate:
             if max_runs_per_day is not None:
                 data["max_runs_per_day"] = int(max_runs_per_day)
             data["updated_by"] = actor_user_id
-            data["updated_at"] = datetime.utcnow().isoformat()
+            data["updated_at"] = utcnow().isoformat()
             if row is None:
                 session.add(SystemSetting(key=self.setting_key, value=data))
             else:

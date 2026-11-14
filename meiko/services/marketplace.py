@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from meiko.db.models import PluginPackage, PluginSource, PluginVersion, User
+from meiko.db.models import PluginPackage, PluginSource, PluginVersion, User, utcnow
 from meiko.plugins.marketplace import Inspection, validate_source_url
 from meiko.services.core import NotFound, ValidationError, utcnow
 

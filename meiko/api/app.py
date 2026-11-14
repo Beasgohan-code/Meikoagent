@@ -272,13 +272,22 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------- health
     @app.get("/health", tags=["health"])
-    async def health() -> dict[str, Any]:
+    async def health(strict: bool = False) -> JSONResponse:
+        """Health for humans and for host probes.
+
+        ``?strict=1`` returns 503 whenever a dependency is down, which is what a load
+        balancer or container health check should use.  The plain response stays 200
+        with ``"status": "degraded"`` so an operator can still read the payload from a
+        service the platform considers unhealthy — but that also means a probe pointed
+        at ``/health`` alone passes for a completely broken API, which is why
+        ``docs/HOSTING.md`` tells you to point it at ``/ready`` or ``/health?strict=1``.
+        """
         db = await database_health()
         from meiko.cache import get_cache
 
         cache = await get_cache().ping()
         status = "ok" if db["status"] == "ok" and cache["status"] == "ok" else "degraded"
-        return {
+        payload: dict[str, Any] = {
             "status": status,
             "bots": _bot_liveness(),
             "service": "api",
@@ -289,6 +298,9 @@ def create_app() -> FastAPI:
             "cache": cache,
             "maintenance": is_maintenance(),
         }
+        return JSONResponse(
+            status_code=200 if (status == "ok" or not strict) else 503, content=payload
+        )
 
     @app.get("/ready", tags=["health"])
     async def ready() -> JSONResponse:

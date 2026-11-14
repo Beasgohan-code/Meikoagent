@@ -26,8 +26,12 @@ ENV DATA_DIR=/data
 VOLUME ["/data"]
 
 EXPOSE 8000
+# Probe the HTTP endpoint, not `start.py --service health`: that command opens its
+# own engine and cache in a second process, so it reports unhealthy whenever the
+# app deliberately runs with a per-process cache, and it can disagree with the
+# process that is actually serving. /ready answers 503 when the database is down.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python start.py --service health || exit 1
+    CMD curl -fsS http://127.0.0.1:${API_PORT:-8000}/ready || exit 1
 
 # Default: the combined launcher stays compatible with `python start.py`.
 CMD ["python", "start.py"]

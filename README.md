@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1101 tests
+python -m pytest -q          # 1110 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -341,10 +341,13 @@ Everything is environment driven — see `.env.example`. Key settings:
 
 ## Operations
 
-- **Health:** `GET /health` (dependencies **and** per-bot liveness), `GET /health/live`
-  (process only), `GET /health/bots` (503 when a bot that should be running is not
-  being serviced), `GET /ready` (readiness, 503 when the database is down),
-  `python start.py --service health` for container probes.
+- **Health:** `GET /ready` is the probe for hosts and containers (503 when the
+  database is down). `GET /health` reports dependencies **and** per-bot liveness but
+  stays `200` with `"degraded"` so it can be read from a sick service — add
+  `?strict=1` to get a `503` instead. `GET /health/live` is the process only, and
+  `GET /health/bots` is `503` when a bot that should be running is not being
+  serviced. A failed database probe recycles the connection pool, so one network blip
+  no longer marks the database down until the next restart.
 - **Ports:** `$PORT` from the platform is adopted when `API_PORT` is unset, so a host
   that assigns a port and probes it sees a healthy service.
 - **Retention:** the watchdog prunes log tables on a timer (activity 90 days, command

@@ -7,7 +7,7 @@ rule engine, anti-spam detectors and automation share this single vocabulary.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -37,7 +37,7 @@ class ModerationEvent:
     is_new_member: bool = False
     joined_within_seconds: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     @property
     def chat_key(self) -> str:

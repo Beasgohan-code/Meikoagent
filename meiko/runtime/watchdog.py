@@ -23,7 +23,7 @@ from sqlalchemy import select
 from meiko.cache import get_cache
 from meiko.config import get_settings
 from meiko.db.base import database_health, session_scope
-from meiko.db.models import BotAccount, RuntimeEvent, Worker
+from meiko.db.models import BotAccount, RuntimeEvent, utcnow, Worker
 from meiko.logging_setup import get_logger
 from meiko.runtime.manager import get_worker_manager
 from meiko.runtime.scheduler import get_scheduler
@@ -53,7 +53,7 @@ class Watchdog:
         scheduler = get_scheduler()
         stale_workers = 0
         async with session_scope() as session:
-            cutoff = datetime.utcnow() - timedelta(seconds=self.interval * 3)
+            cutoff = utcnow() - timedelta(seconds=self.interval * 3)
             stale_workers = len(
                 (
                     await session.scalars(
@@ -97,7 +97,7 @@ class Watchdog:
             and not dead_apps
             and not stale_apps
             and stale_workers == 0,
-            "checked_at": datetime.utcnow().isoformat(),
+            "checked_at": utcnow().isoformat(),
         }
         self.checks = snapshot
         return snapshot
@@ -121,7 +121,7 @@ class Watchdog:
         manager = get_worker_manager()
         for bot_id in bot_ids:
             log.warning("watchdog: recovering dead runtime for bot %s", bot_id)
-            self.recoveries.append({"bot_id": bot_id, "at": datetime.utcnow().isoformat()})
+            self.recoveries.append({"bot_id": bot_id, "at": utcnow().isoformat()})
             await manager._handle_crash(bot_id)
             await self._record(
                 "watchdog.recovery",
@@ -143,7 +143,7 @@ class Watchdog:
                 continue
             log.warning("watchdog: polling for bot %s is stale; restarting the loop", bot_id)
             self.recoveries.append(
-                {"bot_id": bot_id, "at": datetime.utcnow().isoformat(), "kind": "stale"}
+                {"bot_id": bot_id, "at": utcnow().isoformat(), "kind": "stale"}
             )
             try:
                 await application.restart_polling()
@@ -160,7 +160,7 @@ class Watchdog:
         if not count:
             return
         async with session_scope() as session:
-            cutoff = datetime.utcnow() - timedelta(seconds=self.interval * 3)
+            cutoff = utcnow() - timedelta(seconds=self.interval * 3)
             stale = (
                 await session.scalars(
                     select(Worker).where(

@@ -21,7 +21,7 @@ from meiko.api.schemas import (
     PluginInstallRequest,
     PluginResponse,
 )
-from meiko.db.models import BotGroup, Plugin, PluginInstallation, PluginLog
+from meiko.db.models import BotGroup, Plugin, PluginInstallation, PluginLog, utcnow
 from meiko.plugins.base import registry as plugin_registry
 from meiko.plugins.manager import (
     RUNTIME_STATUSES,

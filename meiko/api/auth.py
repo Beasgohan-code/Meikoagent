@@ -20,7 +20,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from meiko.config import get_settings
-from meiko.db.models import AuthSession, User
+from meiko.db.models import AuthSession, User, utcnow
 from meiko.logging_setup import get_logger
 from meiko.security.crypto import hash_api_key, new_api_key, sign_session
 from meiko.services.core import AuditService, UserService
@@ -180,7 +180,7 @@ class AuthService:
                 kind="web",
                 user_agent=user_agent[:256],
                 ip_address=ip[:64],
-                expires_at=datetime.utcnow() + timedelta(seconds=ttl),
+                expires_at=utcnow() + timedelta(seconds=ttl),
             )
         )
         await self.session.flush()
@@ -192,7 +192,7 @@ class AuthService:
         )
         if record is None:
             return False
-        record.revoked_at = datetime.utcnow()
+        record.revoked_at = utcnow()
         await self.session.flush()
         return True
 

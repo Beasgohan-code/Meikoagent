@@ -15,7 +15,7 @@ from meiko.core.commands import seed_core_commands
 # The Studio must describe the surface that exists, even before any bot starts.
 seed_core_commands()
 from meiko.core.declarative import DeclarativeCommand, DeclarativeError
-from meiko.db.models import BotCommandRecord, CommandExecution
+from meiko.db.models import BotCommandRecord, CommandExecution, utcnow
 from meiko.security.permissions import Role, role_from_string
 from meiko.services.core import AuditService, BotService, NotFound
 
@@ -701,7 +701,7 @@ async def export_commands(bot_id: int, auth: CurrentAuth, session: SessionDep) -
     return {
         "version": 1,
         "bot_id": bot_id,
-        "exported_at": __import__("datetime").datetime.utcnow().isoformat(),
+        "exported_at": utcnow().isoformat(),
         "commands": [
             {
                 "name": row.name,

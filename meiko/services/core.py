@@ -899,7 +899,7 @@ class PluginService:
         ``plugin_installations`` only knows the current state; this row is what makes
         "who enabled it, when, from which version" answerable after the fact.
         """
-        from meiko.db.models import PluginInstallEvent
+        from meiko.db.models import PluginInstallEvent, utcnow
 
         self.session.add(
             PluginInstallEvent(

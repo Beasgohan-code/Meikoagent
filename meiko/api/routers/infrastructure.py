@@ -16,7 +16,7 @@ from meiko.api.schemas import RuntimeHealthResponse
 from meiko.cache import get_cache
 from meiko.config import BOT_API_VERSION, get_settings
 from meiko.db.base import database_health
-from meiko.db.models import ActivityEvent, BotAccount, RuntimeEvent, Worker
+from meiko.db.models import ActivityEvent, BotAccount, RuntimeEvent, utcnow, Worker
 from meiko.runtime.manager import get_worker_manager
 from meiko.services.core import BotService
 
@@ -72,7 +72,7 @@ async def runtime(auth: CurrentAuth, session: SessionDep) -> RuntimeHealthRespon
         services=services,
         version=__version__,
         bot_api=BOT_API_VERSION,
-        timestamp=datetime.utcnow(),
+        timestamp=utcnow(),
     )
 
 
@@ -80,7 +80,7 @@ async def runtime(auth: CurrentAuth, session: SessionDep) -> RuntimeHealthRespon
 async def workers(auth: CurrentAuth, session: SessionDep) -> list[dict]:
     rows = (await session.scalars(select(Worker).order_by(Worker.id.desc()).limit(50))).all()
     manager = get_worker_manager()
-    now = datetime.utcnow()
+    now = utcnow()
     return [
         {
             "id": row.id,
@@ -158,7 +158,7 @@ async def logs(
 async def monitoring(auth: CurrentAuth, session: SessionDep) -> dict[str, Any]:
     bots = await BotService(session).list_for_owner(auth.user.id)
     bot_ids = [b.id for b in bots]
-    since = datetime.utcnow() - timedelta(hours=24)
+    since = utcnow() - timedelta(hours=24)
     events = 0
     if bot_ids:
         events = int(
@@ -197,11 +197,12 @@ async def database(auth: CurrentAuth, session: SessionDep) -> dict[str, Any]:
     health = await database_health()
     counts = {}
     from meiko.db.models import (
-        GroupMember,
-        ModerationAction,
-        PluginInstallation,
-        User,
-    )
+    GroupMember,
+    ModerationAction,
+    PluginInstallation,
+    User,
+    utcnow,
+)
 
     for model in (User, BotAccount, ModerationAction, PluginInstallation, GroupMember):
         counts[model.__tablename__] = int(

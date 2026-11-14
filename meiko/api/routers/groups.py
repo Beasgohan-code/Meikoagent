@@ -23,6 +23,7 @@ from meiko.db.models import (
     GroupSettings,
     ModerationAction,
     Report,
+    utcnow,
     Warning,
 )
 from meiko.moderation.antispam import AntiSpamPolicy
@@ -292,7 +293,7 @@ async def resolve_report(
         raise error(404, "not_found", "report not found")
     report.status = status_value
     if status_value != "open":
-        report.resolved_at = datetime.utcnow()
+        report.resolved_at = utcnow()
         report.resolved_by = auth.user.telegram_id
     return {"id": report.id, "status": report.status}
 

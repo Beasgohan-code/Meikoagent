@@ -17,7 +17,7 @@ from sqlalchemy import select
 from meiko.cache import get_cache
 from meiko.config import get_settings
 from meiko.db.base import session_scope
-from meiko.db.models import RuntimeEvent, ScheduledTask
+from meiko.db.models import RuntimeEvent, ScheduledTask, utcnow
 from meiko.logging_setup import get_logger
 
 log = get_logger("runtime.scheduler")
@@ -29,7 +29,7 @@ def next_run(cron: str | None, base: datetime | None = None) -> datetime | None:
     if not cron:
         return None
     try:
-        return croniter(cron, base or datetime.utcnow()).get_next(datetime)
+        return croniter(cron, base or utcnow()).get_next(datetime)
     except (CroniterBadCronError, ValueError):  # pragma: no cover - guarded upstream
         log.warning("invalid cron expression %r", cron)
         return None
@@ -52,7 +52,7 @@ class Scheduler:
     async def tick(self) -> list[dict[str, Any]]:
         """Execute every due task exactly once (guarded by a cache lock)."""
         results: list[dict[str, Any]] = []
-        now = datetime.utcnow()
+        now = utcnow()
         async with session_scope() as session:
             due = (
                 await session.scalars(
@@ -90,7 +90,7 @@ class Scheduler:
                 result = await handler(task)
                 task.status = "done" if not task.cron else "pending"
                 task.last_error = None
-                task.last_run_at = datetime.utcnow()
+                task.last_run_at = utcnow()
                 task.next_run_at = next_run(task.cron) if task.cron else None
                 session.add(
                     RuntimeEvent(kind="scheduler.run", message=f"task {task.id} ({kind}) executed")
@@ -105,7 +105,7 @@ class Scheduler:
                     task.next_run_at = None
                 else:
                     task.status = "retrying"
-                    task.next_run_at = datetime.utcnow() + timedelta(seconds=30 * attempts)
+                    task.next_run_at = utcnow() + timedelta(seconds=30 * attempts)
                 session.add(
                     RuntimeEvent(
                         kind="scheduler.failed",

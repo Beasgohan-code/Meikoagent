@@ -7,7 +7,8 @@
 # * `meiko` is a **web service** running everything in one process: the API, the
 #   scheduler, the watchdog and the bot runtimes.  It answers real inbound traffic on
 #   `/health`, which is what keeps a web service awake on its own.  Nothing pings
-#   itself.
+#   itself.  The probe points at `/ready`, which is 503 while the database is down
+#   (plain `/health` answers 200 "degraded" so an operator can read the payload).
 # * The health check points at `/health/live`, which reports the web process only.
 #   `/health` additionally reports per-bot liveness, so a bot that stopped polling
 #   turns the service red and the platform restarts it.  That is the honest version of
@@ -29,7 +30,7 @@ services:
     plan: starter
     region: singapore
     numInstances: 1
-    healthCheckPath: /health/live
+    healthCheckPath: /ready
     autoDeploy: true
     envVars:
       # -- required, set these in the dashboard (sync: false = never committed) --

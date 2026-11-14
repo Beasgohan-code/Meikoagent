@@ -167,12 +167,26 @@ async def dispose_engine() -> None:
     _sessionmaker = None
 
 
-async def database_health() -> dict[str, Any]:
-    """Real connectivity probe, never a fake 200."""
+async def database_health(*, recover: bool = True) -> dict[str, Any]:
+    """Real connectivity probe, never a fake 200.
+
+    ``recover=True`` recycles the pooled connections after a failure.  Without it a
+    single network blip poisoned the pool for the life of the process: every later
+    probe failed the same way, the health endpoint reported the database down
+    forever, and only a restart (or the provider's circuit breaker) fixed it.
+    """
     try:
         engine = get_engine()
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception:
+            if not recover:
+                raise
+            await engine.dispose()
+            engine = get_engine()
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
         backend = engine.dialect.name
         pool = getattr(engine, "pool", None)
         stats: dict[str, Any] = {"dialect": backend}

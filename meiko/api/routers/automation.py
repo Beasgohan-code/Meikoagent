@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from meiko.api.deps import CurrentAuth, SessionDep, error
 from meiko.api.schemas import ScheduleRequest, ScheduleResponse, WorkflowRequest, WorkflowResponse
-from meiko.db.models import ScheduledTask, Workflow
+from meiko.db.models import ScheduledTask, utcnow, Workflow
 from meiko.plugins.builtin.automation import validate_workflow
 from meiko.services.core import AuditService, BotService, NotFound
 
@@ -134,8 +134,8 @@ async def create_schedule(
         name=payload.name,
         kind=payload.kind,
         cron=payload.cron,
-        run_at=payload.run_at or (datetime.utcnow() + timedelta(minutes=1)),
-        next_run_at=payload.run_at or datetime.utcnow() + timedelta(minutes=1),
+        run_at=payload.run_at or (utcnow() + timedelta(minutes=1)),
+        next_run_at=payload.run_at or utcnow() + timedelta(minutes=1),
         payload=payload.payload,
         status="pending",
     )

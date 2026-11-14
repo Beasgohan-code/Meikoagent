@@ -16,6 +16,7 @@ from meiko.db.models import (
     PluginInstallation,
     RuntimeEvent,
     User,
+    utcnow,
     Worker,
 )
 from meiko.services.core import AuditService, UserService
@@ -150,7 +151,7 @@ async def audit_log(
 
 @router.get("/security-events", response_model=list[dict])
 async def security_events(auth: OwnerAuth, session: SessionDep) -> list[dict]:
-    since = datetime.utcnow() - timedelta(days=7)
+    since = utcnow() - timedelta(days=7)
     rows = (
         await session.scalars(
             select(AuditLog)
@@ -176,7 +177,7 @@ async def security_events(auth: OwnerAuth, session: SessionDep) -> list[dict]:
 
 @router.post("/plugins/{slug}/approve", response_model=dict)
 async def approve_plugin(slug: str, auth: OwnerAuth, session: SessionDep) -> dict:
-    from meiko.db.models import Plugin
+    from meiko.db.models import Plugin, utcnow
 
     plugin = await session.scalar(select(Plugin).where(Plugin.slug == slug))
     if plugin is None:
@@ -881,7 +882,7 @@ async def security_overview(auth: OwnerAuth, session: SessionDep) -> dict[str, A
     from meiko.config import get_settings
     from meiko.db.models import ApiKey
 
-    since = datetime.utcnow() - timedelta(days=7)
+    since = utcnow() - timedelta(days=7)
     interesting = [
         "auth.login",
         "auth.failed",

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from meiko.cache import get_cache
 from meiko.config import get_settings
 from meiko.db.base import get_db
-from meiko.db.models import ApiKey, AuthSession, User
+from meiko.db.models import ApiKey, AuthSession, User, utcnow
 from meiko.security.crypto import hash_api_key, verify_session
 from meiko.security.permissions import Principal, Role, role_from_string
 
@@ -69,7 +69,7 @@ async def _from_session(session: AsyncSession, token: str) -> AuthContext | None
     record = await session.scalar(
         select(AuthSession).where(AuthSession.token_hash == _hash(token))
     )
-    now = datetime.utcnow()
+    now = utcnow()
     if record is None or record.revoked_at is not None or record.expires_at < now:
         return None
     user = await session.get(User, record.user_id)
@@ -89,7 +89,7 @@ async def _from_api_key(session: AsyncSession, key: str) -> AuthContext | None:
     user = await session.get(User, record.user_id)
     if user is None or user.status != "active":
         return None
-    record.last_used_at = datetime.utcnow()
+    record.last_used_at = utcnow()
     role = Role.OWNER if user.is_owner else role_from_string(user.role)
     return AuthContext(
         user=user,

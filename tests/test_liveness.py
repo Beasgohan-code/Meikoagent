@@ -182,12 +182,12 @@ class TestTheBlueprintIsHonest:
         assert all("free" not in value for value in settings), settings
         assert any("starter" in value for value in settings), settings
 
-    def test_the_health_check_is_a_real_endpoint(self, blueprint):
-        assert "healthCheckPath: /health/live" in blueprint
-        # and the app really serves it
+    def test_the_health_check_is_a_real_endpoint_that_can_fail(self, blueprint):
+        """A host probe must be able to say no; `/health` answers 200 "degraded"."""
+        assert "healthCheckPath: /ready" in blueprint
         from meiko.api.app import create_app
 
-        assert "/health/live" in create_app().openapi()["paths"]
+        assert "/ready" in create_app().openapi()["paths"]
 
     def test_it_does_not_ping_itself(self, blueprint):
         """No self-ping URL, no cron that hits the service, no keep-alive timer."""
@@ -196,3 +196,175 @@ class TestTheBlueprintIsHonest:
         )
         for word in ("ping", "keep_alive", "keepalive", "cron"):
             assert word not in lowered, word
+
+
+class TestHealthCanActuallyFail:
+    """A probe pointed at /health used to pass for a completely broken API."""
+
+    async def test_strict_health_is_503_when_the_database_is_down(self, app_client):
+        from unittest.mock import patch
+
+        with patch("meiko.api.app.database_health", return_value={"status": "error"}):
+            response = await app_client.get("/health?strict=1")
+        assert response.status_code == 503
+        assert response.json()["status"] == "degraded"
+
+    async def test_plain_health_stays_readable(self, app_client):
+        from unittest.mock import patch
+
+        with patch("meiko.api.app.database_health", return_value={"status": "error"}):
+            response = await app_client.get("/health")
+        assert response.status_code == 200
+        assert response.json()["status"] == "degraded"
+
+    async def test_ready_is_503_when_the_database_is_down(self, app_client):
+        from unittest.mock import patch
+
+        with patch("meiko.api.app.database_health", return_value={"status": "error"}):
+            response = await app_client.get("/ready")
+        assert response.status_code == 503
+
+
+class TestThePoolRecoversFromOneBadProbe:
+    """One network blip used to poison the pool for the life of the process."""
+
+    @staticmethod
+    def _spy(monkeypatch):
+        """Count disposes without patching the read-only attribute on AsyncEngine."""
+        from meiko.db import base as db_base
+
+        events = {"dispose": 0, "created": 0}
+
+        class Proxy:
+            def __init__(self, engine):
+                self._engine = engine
+
+            async def dispose(self):
+                events["dispose"] += 1
+                await self._engine.dispose()
+
+            def __getattr__(self, name):
+                return getattr(self._engine, name)
+
+        real_get = db_base.get_engine
+
+        def counting_get():
+            engine = real_get()
+            return Proxy(engine)
+
+        monkeypatch.setattr(db_base, "get_engine", counting_get)
+        return events
+
+    async def test_a_failed_probe_disposes_the_pool_and_retries(self, db, monkeypatch):
+        from unittest.mock import patch
+
+        from meiko.db.base import database_health
+
+        events = self._spy(monkeypatch)
+        with patch("meiko.db.base.text", side_effect=OSError("blip")):
+            result = await database_health()
+        assert events["dispose"] == 1, "a failed probe must recycle the connection pool"
+        assert result["status"] == "error"
+
+    async def test_recover_false_reports_without_touching_the_pool(self, db, monkeypatch):
+        from unittest.mock import patch
+
+        from meiko.db.base import database_health
+
+        events = self._spy(monkeypatch)
+        with patch("meiko.db.base.text", side_effect=OSError("blip")):
+            result = await database_health(recover=False)
+        assert events["dispose"] == 0
+        assert result["status"] == "error"
+
+
+class TestConflictRetriesInsteadOfDying:
+    """A token conflict used to end the polling task permanently."""
+
+    async def test_the_loop_retries_a_conflict_with_backoff(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from aiogram.exceptions import TelegramConflictError
+
+        from meiko.bot import BotApplication
+
+        application = BotApplication(bot_id=1, owner_id=1, token="123:abc")
+        application.bot = MagicMock()
+        application.bot.delete_webhook = AsyncMock()
+        application.dispatcher = MagicMock()
+        attempts = {"n": 0}
+
+        async def start_polling(*args, **kwargs):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise TelegramConflictError(method=None, message="terminated by other getUpdates")
+            return None
+
+        application.dispatcher.start_polling = start_polling
+
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds):
+            sleeps.append(seconds)
+
+        import meiko.bot as bot_module
+
+        with __import__("unittest.mock", fromlist=["patch"]).patch.object(
+            bot_module.asyncio, "sleep", fake_sleep
+        ):
+            await application._poll_loop(["message"])
+
+        assert attempts["n"] == 3, "the loop must keep retrying instead of giving up"
+        assert application.conflicts == 2
+        assert sleeps == [1.0, 2.0], "backoff must grow, not hammer Telegram"
+        assert "another instance" in (application.last_error or "")
+
+    async def test_a_rejected_token_still_stops_immediately(self):
+        """Retrying an invalid token would hammer the API forever."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from aiogram.exceptions import TelegramUnauthorizedError
+
+        from meiko.bot import BotApplication
+
+        application = BotApplication(bot_id=1, owner_id=1, token="bad")
+        application.bot = MagicMock()
+        application.bot.delete_webhook = AsyncMock()
+        application.dispatcher = MagicMock()
+        attempts = {"n": 0}
+
+        async def start_polling(*args, **kwargs):
+            attempts["n"] += 1
+            raise TelegramUnauthorizedError(method=None, message="Unauthorized")
+
+        application.dispatcher.start_polling = start_polling
+        await application._poll_loop(["message"])
+        assert attempts["n"] == 1
+        assert application.last_error == "invalid bot token"
+
+
+class TestTimeHandlingIsConsistent:
+    """`datetime.utcnow()` is deprecated in 3.12 and disagrees with stored values.
+
+    The schema stores naive UTC via ``meiko.db.models.utcnow``; mixing the two means
+    a comparison can be off, and Python warns on the deprecated call.
+    """
+
+    def test_no_module_calls_the_deprecated_helper(self):
+        from pathlib import Path
+
+        offenders = []
+        for path in (Path(__file__).resolve().parents[1] / "meiko").rglob("*.py"):
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if "datetime.utcnow(" in line:
+                    offenders.append(f"{path.name}:{number}")
+        assert not offenders, f"use meiko.db.models.utcnow(): {offenders}"
+
+    def test_the_helper_returns_naive_utc(self):
+        from datetime import datetime, timezone
+
+        from meiko.db.models import utcnow
+
+        now = utcnow()
+        assert now.tzinfo is None
+        assert abs((datetime.now(timezone.utc).replace(tzinfo=None) - now).total_seconds()) < 5

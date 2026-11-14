@@ -92,6 +92,9 @@ class BotApplication:
     started_at: float = 0.0
     healthy: bool = False
     last_error: str | None = None
+    #: How many TelegramConflictError responses this runtime has seen; more than one
+    #: means the token is in use somewhere else.
+    conflicts: int = 0
     #: When the polling loop last began an iteration.  ``healthy`` is set once at
     #: start and stays true while aiogram retries internally, so on its own it can
     #: claim a bot is fine when the network has been gone for hours -- the complaint
@@ -203,10 +206,24 @@ class BotApplication:
                 )
                 return
             except TelegramConflictError as exc:
+                # Another poller holds this token: usually a second worker, a clone
+                # that has not been stopped, or the same bot deployed twice. It is
+                # often transient while a deploy swaps instances, so retrying with
+                # backoff is right - giving up permanently meant the bot stayed dead
+                # until someone restarted the whole service.
                 self.healthy = False
-                self.last_error = str(exc)
-                log.error("polling conflict for bot %s: %s", self.bot_id, exc)
-                return
+                self.last_error = f"another instance is polling this bot ({exc})"
+                self.conflicts += 1
+                log.error(
+                    "polling conflict for bot %s: %s (retry in %.0fs; is the same token "
+                    "running elsewhere?)",
+                    self.bot_id,
+                    exc,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)
+                continue
             except TelegramUnauthorizedError as exc:
                 self.healthy = False
                 self.last_error = "invalid bot token"
@@ -332,6 +349,7 @@ class BotApplication:
             "commands": len(command_registry),
             "polling_task_alive": bool(self._polling_task and not self._polling_task.done()),
             "last_error": self.last_error,
+            "conflicts": self.conflicts,
             "counters": self.context.counters if self.context else {},
         }
 

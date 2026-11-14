@@ -31,7 +31,7 @@ from meiko.bot import BotApplication, load_bot_application
 from meiko.cache import get_cache
 from meiko.config import get_settings
 from meiko.db.base import session_scope
-from meiko.db.models import BotAccount, RuntimeEvent, Worker
+from meiko.db.models import BotAccount, RuntimeEvent, utcnow, Worker
 from meiko.logging_setup import get_logger
 from meiko.services.core import BotService
 
@@ -100,7 +100,7 @@ class WorkerManager:
                 worker.status = "running"
                 worker.pid = os.getpid()
                 worker.capacity = self.state.capacity
-                worker.started_at = datetime.utcnow()
+                worker.started_at = utcnow()
             self.state.worker_id = worker.id
             await self._record_event(
                 session, "worker.registered", f"worker {worker.name} online", worker.id
@@ -115,7 +115,7 @@ class WorkerManager:
             if worker is None:
                 self.state.worker_id = None
                 return
-            worker.last_heartbeat_at = datetime.utcnow()
+            worker.last_heartbeat_at = utcnow()
             worker.current_load = len(self.state.applications)
             worker.status = "running"
         for bot_id in list(self.state.applications):
@@ -226,7 +226,7 @@ class WorkerManager:
                     bot = await session.get(BotAccount, bot_id)
                     if bot is not None:
                         bot.status = "running"
-                        bot.last_started_at = datetime.utcnow()
+                        bot.last_started_at = utcnow()
                         bot.last_error = None
                         bot.worker_id = self.state.worker_id
                     await self._record_event(
@@ -247,7 +247,7 @@ class WorkerManager:
                 bot = await session.get(BotAccount, bot_id)
                 if bot is not None:
                     bot.status = "stopped"
-                    bot.last_stopped_at = datetime.utcnow()
+                    bot.last_stopped_at = utcnow()
                     bot.worker_id = None
                     await self._record_event(
                         session, "bot.stopped", f"bot {bot_id} stopped", self.state.worker_id, bot_id
@@ -288,7 +288,7 @@ class WorkerManager:
                 and bot.lease_owner is not None
                 and bot.lease_owner != self.state.worker_id
                 and bot.lease_expires_at is not None
-                and bot.lease_expires_at > datetime.utcnow()
+                and bot.lease_expires_at > utcnow()
             ):
                 return {
                     "acquired": False,
@@ -297,7 +297,7 @@ class WorkerManager:
                 }
             if bot is not None and self.state.worker_id is not None:
                 bot.lease_owner = self.state.worker_id
-                bot.lease_expires_at = datetime.utcnow() + timedelta(
+                bot.lease_expires_at = utcnow() + timedelta(
                     seconds=START_CLAIM_TTL
                 )
                 await session.flush()
@@ -347,7 +347,7 @@ class WorkerManager:
                 and self.state.worker_id is not None
                 and bot.lease_owner == self.state.worker_id
             ):
-                bot.lease_expires_at = datetime.utcnow() + timedelta(
+                bot.lease_expires_at = utcnow() + timedelta(
                     seconds=START_CLAIM_TTL
                 )
 
@@ -406,7 +406,7 @@ class WorkerManager:
                     # A shutdown that still reports a recent heartbeat makes the
                     # watchdog believe this worker is alive and keep handing it
                     # bots, so stamp the departure explicitly.
-                    worker.last_heartbeat_at = datetime.utcnow() - timedelta(
+                    worker.last_heartbeat_at = utcnow() - timedelta(
                         seconds=self.settings.clone_heartbeat_seconds * 2
                     )
             self.state.worker_id = None
