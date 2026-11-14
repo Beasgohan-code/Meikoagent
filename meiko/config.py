@@ -23,6 +23,68 @@ DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 BOT_API_VERSION = "10.4"
 
 
+#: Schemes a hosting provider or a dashboard actually gives you, and the async
+#: driver that works with this codebase.  Pasting a copied URL must work: both
+#: Render and Supabase hand out plain ``postgresql://`` strings, and SQLAlchemy then
+#: selects the *synchronous* psycopg driver, which is neither installed here nor
+#: usable from async code — the deployment dies at boot with ModuleNotFoundError.
+_SYNC_POSTGRES_SCHEMES = ("postgresql", "postgres")
+_ASYNC_POSTGRES_SCHEME = "postgresql+asyncpg"
+
+
+def normalize_async_database_url(url: str) -> str:
+    """Map a provider's connection string onto the driver this app uses."""
+    if not url:
+        return url
+    scheme, separator, rest = url.partition("://")
+    if separator and scheme.lower() in _SYNC_POSTGRES_SCHEMES:
+        return f"{_ASYNC_POSTGRES_SCHEME}://{rest}"
+    return url
+
+
+_LOCAL_DB_HOSTS = ("localhost", "127.0.0.1", "::1", "db", "postgres", "host.docker.internal")
+
+
+def database_tls_warning(settings: "Settings") -> str | None:
+    """Return a message when a remote Postgres connection is not using TLS.
+
+    Managed providers (Supabase, Neon, Render, RDS) refuse or downgrade non-TLS
+    connections, and the failure surfaces as a connection reset in the middle of a
+    query rather than as a configuration error.  Returned in development, raised in
+    production by :func:`meiko.api.app._verify_deployment_settings`.
+    """
+    url = settings.resolved_database_url
+    if not url.startswith(("postgresql", "postgres")):
+        return None
+    lowered = url.lower()
+    if "sslmode=" in lowered or "ssl=" in lowered:
+        return None
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:  # pragma: no cover
+        return None
+    if not host or host in _LOCAL_DB_HOSTS or host.startswith("127."):
+        return None
+    return (
+        f"database host {host!r} is remote but the URL does not request TLS; add "
+        "?sslmode=require (managed Postgres such as Supabase/Neon/Render requires it)"
+    )
+
+
+def migration_url_problem(settings: "Settings") -> str | None:
+    """Return a message when migrations would run against a transaction pooler."""
+    if not settings.database_is_pooled or settings.migration_url:
+        return None
+    return (
+        "DATABASE_URL points at a pooler (transaction mode) and MIGRATION_URL is empty: "
+        "multi-statement DDL is not safe there. Set MIGRATION_URL to the provider's "
+        "direct/session connection (Supabase: port 5432 on db.<ref>.supabase.co) and run "
+        "`python start.py --service migrate` before starting the API"
+    )
+
+
 class Settings(BaseSettings):
     """Platform wide settings, loaded from environment / ``.env``."""
 
@@ -158,9 +220,23 @@ class Settings(BaseSettings):
     @property
     def resolved_database_url(self) -> str:
         if self.database_url:
-            return self.database_url
+            return normalize_async_database_url(self.database_url)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         return f"sqlite+aiosqlite:///{(self.data_dir / 'meiko.db').as_posix()}"
+
+    @property
+    def database_is_pooled(self) -> bool:
+        """True for a transaction pooler (Supabase pgbouncer, pgBouncer, RDS proxy)."""
+        from urllib.parse import urlsplit
+
+        url = self.resolved_database_url
+        lowered = url.lower()
+        if "pooler" in lowered or "pgbouncer" in lowered:
+            return True
+        try:
+            return urlsplit(url).port == 6543
+        except ValueError:  # pragma: no cover
+            return False
 
     @property
     def migration_database_url(self) -> str:
@@ -170,7 +246,9 @@ class Settings(BaseSettings):
         cannot run multi-statement DDL reliably, so migrations take a direct URL
         when one is configured and fall back to the app URL otherwise.
         """
-        return self.migration_url or self.resolved_database_url
+        if self.migration_url:
+            return normalize_async_database_url(self.migration_url)
+        return self.resolved_database_url
 
     @property
     def cors_origin_list(self) -> list[str]:

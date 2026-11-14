@@ -68,6 +68,37 @@ now real:
 * **`telegram_polling_timeout`** is now explicit, so the staleness window scales with
   how long a long-poll is expected to block.
 
+## Connecting a managed Postgres (Supabase, Neon, Render)
+
+A managed database is the right place for this app's state — but three details make
+a copied connection string fail, and all three are now handled explicitly:
+
+1. **The scheme.** Supabase and Render hand out `postgresql://…`. SQLAlchemy reads
+   that as the *synchronous* psycopg driver, which is not installed → the service dies
+   at boot with `ModuleNotFoundError: No module named 'psycopg'`. The URL is normalised
+   to `postgresql+asyncpg://` automatically, so paste what the dashboard gives you.
+2. **TLS.** `?sslmode=require` is libpq syntax; the asyncpg dialect forwards unknown
+   query parameters straight into `asyncpg.connect()` and it rejects them. The
+   parameter is moved into a real connect argument (`ssl=True`), so the URL still says
+   `sslmode=require` and the connection actually uses TLS. A **remote** Postgres
+   without TLS refuses to boot in production instead of failing mid-query.
+3. **Pooler vs migrations.** Supabase's pooler (`…pooler.supabase.com:6543`,
+   transaction mode) cannot run multi-statement DDL. Set `MIGRATION_URL` to the direct
+   connection (`db.<ref>.supabase.co:5432`) and run migrations first:
+
+```bash
+# Supabase dashboard → Project Settings → Database → Connection string
+DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
+MIGRATION_URL=postgresql://postgres.<ref>:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+
+python start.py --service migrate     # uses MIGRATION_URL
+python start.py --service api         # uses DATABASE_URL
+```
+
+`python start.py --service migrate` also seeds the plugin catalogue, so a fresh
+database needs no manual step. Redis is still required for more than one process;
+Supabase does not provide it — use Upstash or the Compose service.
+
 ## A deployment shape that is not a policy problem
 
 Every long-running process here is a normal worker, not a web service:

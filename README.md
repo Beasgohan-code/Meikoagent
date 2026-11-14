@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1062 tests
+python -m pytest -q          # 1090 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -347,6 +347,11 @@ Everything is environment driven — see `.env.example`. Key settings:
   `python start.py --service health` for container probes.
 - **Ports:** `$PORT` from the platform is adopted when `API_PORT` is unset, so a host
   that assigns a port and probes it sees a healthy service.
+- **Managed Postgres:** paste the provider's URL as given. `postgresql://` is mapped to
+  asyncpg, `?sslmode=require` is translated into a real TLS connect argument, and a
+  remote database without TLS refuses to boot in production. If the URL is a
+  transaction pooler, set `MIGRATION_URL` to the direct connection and migrate first
+  (`docs/HOSTING.md`).
 - **Migrations:** `python start.py --service migrate` (or `alembic upgrade head`). Autogenerate with
   `alembic revision --autogenerate -m "…"`.
 - **Scaling:** run one `api` (or several behind a proxy), one or more `worker` processes, one

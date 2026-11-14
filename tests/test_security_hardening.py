@@ -433,6 +433,22 @@ class TestProductionRefusesUnusableSettings:
         object.__setattr__(settings, "secret_key", "k" * 48)
         _verify_deployment_settings(settings)
 
+    def test_production_refuses_a_remote_database_without_tls(self):
+        import pytest as _pytest
+
+        from meiko.api.app import _verify_deployment_settings
+        from meiko.config import Settings
+
+        settings = Settings(environment="production")
+        object.__setattr__(settings, "secret_key", "k" * 48)
+        object.__setattr__(
+            settings,
+            "database_url",
+            "postgresql+asyncpg://u:p@db.example.com:5432/postgres",
+        )
+        with _pytest.raises(RuntimeError, match="TLS"):
+            _verify_deployment_settings(settings)
+
     def test_development_is_never_blocked(self):
         from meiko.api.app import _verify_deployment_settings
         from meiko.config import Settings

@@ -46,11 +46,9 @@ services:
       - key: REDIS_URL
         sync: false          # required for more than one process
       # -- routing --
-      - key: PORT
-        fromService:
-          type: web
-          name: meiko
-          envVarKey: PORT     # platforms assign $PORT; the API adopts it
+      # PORT is assigned by Render and injected into the container.  Do not declare
+      # it here: `fromService` copies a value *from* this same service (or another
+      # one) and was wrong; the app reads $PORT on its own (see meiko/config.py).
       # -- behaviour --
       - key: ENVIRONMENT
         value: production

@@ -61,6 +61,14 @@ def _verify_deployment_settings(settings) -> None:
             "a generated key invalidates every session on restart and is not shared "
             "between workers"
         )
+    from meiko.config import database_tls_warning, migration_url_problem
+
+    tls_problem = database_tls_warning(settings)
+    if tls_problem:
+        raise RuntimeError(tls_problem)
+    pooled_problem = migration_url_problem(settings)
+    if pooled_problem:
+        log.warning(pooled_problem)
     if not settings.cookie_secure:
         log.warning(
             "COOKIE_SECURE is off in production: session cookies are only protected "

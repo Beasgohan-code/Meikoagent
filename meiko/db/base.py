@@ -37,20 +37,70 @@ def _engine_kwargs(settings: Settings, url: str) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"echo": settings.db_echo, "future": True}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"timeout": 30}
-    else:
-        kwargs.update(
-            pool_size=settings.db_pool_size,
-            max_overflow=settings.db_max_overflow,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-        )
+        return kwargs
+
+    kwargs.update(
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+    )
     return kwargs
+
+
+def strip_libpq_ssl(url: str) -> tuple[str, dict[str, Any]]:
+    """Move libpq-style ssl query parameters into asyncpg connect arguments.
+
+    `?sslmode=require` is libpq syntax.  SQLAlchemy's asyncpg dialect copies *every*
+    URL query parameter into ``asyncpg.connect(...)``, which rejects unknown keywords
+    ("unexpected keyword argument 'sslmode'") — so a copied Supabase or Render URL
+    failed at connect time even after the scheme was fixed.  The parameter has to be
+    removed from the URL, not merely supplemented.
+
+    Returns ``(url_without_ssl_params, connect_args)``.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # pragma: no cover - let SQLAlchemy report it
+        return url, {}
+    if not parts.query:
+        return url, {}
+    ssl_keys = {"sslmode", "ssl"}
+    kept: list[tuple[str, str]] = []
+    connect_args: dict[str, Any] = {}
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        if key.lower() in ssl_keys:
+            connect_args["ssl"] = _asyncpg_ssl(value)
+        else:
+            kept.append((key, value))
+    if not connect_args:
+        return url, {}
+    cleaned = urlunsplit(parts._replace(query=urlencode(kept)))
+    return cleaned, connect_args
+
+
+def _asyncpg_ssl(mode: str) -> Any:
+    """Map a libpq sslmode onto what asyncpg accepts."""
+    mode = (mode or "").strip().lower()
+    if mode in ("require", "prefer", "allow", "true", "1", "on"):
+        return True
+    if mode in ("verify-ca", "verify-full"):
+        return mode
+    if mode in ("disable", "false", "0", "off"):
+        return False
+    return True
 
 
 def create_engine(settings: Settings | None = None, url: str | None = None) -> AsyncEngine:
     settings = settings or get_settings()
     database_url = url or settings.resolved_database_url
-    engine = create_async_engine(database_url, **_engine_kwargs(settings, database_url))
+    database_url, ssl_connect_args = strip_libpq_ssl(database_url)
+    kwargs = _engine_kwargs(settings, database_url)
+    if ssl_connect_args:
+        kwargs.setdefault("connect_args", {}).update(ssl_connect_args)
+    engine = create_async_engine(database_url, **kwargs)
     if database_url.startswith("sqlite"):
 
         @event.listens_for(engine.sync_engine, "connect")
