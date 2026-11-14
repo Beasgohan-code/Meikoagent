@@ -328,3 +328,40 @@ class TestSupabaseGuidanceIsReachable:
         assert "Session pooler" in hosting
         # the old advice paired a 6543 app URL with the IPv6-only migration host
         assert "postgres.<ref>:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require\n\npython start.py" not in hosting
+
+
+class TestTermuxCloudDatabasePath:
+    """A phone that points at cloud Postgres must not make things worse."""
+
+    @pytest.fixture(scope="class")
+    def setup_script(self) -> str:
+        return (ROOT / "scripts" / "termux_setup.sh").read_text()
+
+    @pytest.fixture(scope="class")
+    def boot_script(self) -> str:
+        return (ROOT / "scripts" / "termux_boot.sh").read_text()
+
+    def test_setup_offers_a_cloud_database(self, setup_script):
+        assert "DATABASE_URL" in setup_script
+        assert "Session pooler" in setup_script or "session pooler" in setup_script
+
+    def test_setup_rejects_a_non_postgres_url(self, setup_script):
+        assert "postgres://*|postgresql://*" in setup_script
+
+    def test_setup_tests_the_url_before_finishing(self, setup_script):
+        assert "NOT reachable" in setup_script
+        assert "select 1" in setup_script
+
+    def test_the_ipv6_hint_only_fires_for_the_direct_host(self, setup_script):
+        """The hint must not appear for a pooler host — that was the misleading path."""
+        assert 'startswith("db.")' in setup_script
+        assert "IPv6" in setup_script
+
+    def test_boot_does_not_migrate_a_cloud_database_by_default(self, boot_script):
+        assert 'MEIKO_MIGRATE' in boot_script
+        assert 'if [ "${MEIKO_MIGRATE:-0}" = "1" ]' in boot_script
+
+    def test_the_hosting_doc_explains_both(self):
+        doc = (ROOT / "docs" / "HOSTING.md").read_text()
+        assert "MEIKO_MIGRATE=1" in doc
+        assert "unreachable" in doc.lower() or "Network is unreachable" in doc

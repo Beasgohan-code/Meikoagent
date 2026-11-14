@@ -58,11 +58,18 @@ else
 fi
 
 cd "$REPO_DIR"
-log "migrating"
-python start.py --service migrate >>"$LOG_FILE" 2>&1 || {
-  warn "migration failed; see $LOG_FILE"
-  exit 1
-}
+# The boot script must not migrate a cloud database: it can run on every restart and
+# repeatedly while the phone is asleep, and a phone is not an operator. Migrations are
+# explicit — MEIKO_MIGRATE=1 (or run start.py --service migrate yourself).
+if [ "${MEIKO_MIGRATE:-0}" = "1" ]; then
+  log "migrating"
+  python start.py --service migrate >>"$LOG_FILE" 2>&1 || {
+    warn "migration failed; see $LOG_FILE"
+    exit 1
+  }
+else
+  log "skipping migrations (set MEIKO_MIGRATE=1 to run them here)"
+fi
 
 log "starting API + console (log: $LOG_FILE)"
 nohup python start.py >>"$LOG_FILE" 2>&1 &

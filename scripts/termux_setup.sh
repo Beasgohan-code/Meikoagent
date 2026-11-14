@@ -85,6 +85,87 @@ PY
   log "    wrote $ENV_FILE (chmod 600)"
 fi
 
+# The database can live in the cloud while the bot runs on the phone. Point
+# DATABASE_URL at a managed Postgres and the phone holds no state that a restart can
+# lose; leave it empty and everything stays in DATA_DIR as SQLite.
+if [ -z "$(grep -E '^DATABASE_URL=.+' "$ENV_FILE" 2>/dev/null)" ]; then
+  if [ -t 0 ]; then
+    printf '\nPaste a Postgres URL to keep data in the cloud (Supabase etc.),\n'
+    printf 'or press Enter to stay on SQLite: '
+    read -r PG_URL
+    if [ -n "${PG_URL:-}" ]; then
+      case "$PG_URL" in
+        postgres://*|postgresql://*) ;;
+        *) warn "that is not a postgres:// URL; leaving SQLite in place"; PG_URL="" ;;
+      esac
+    fi
+    if [ -n "${PG_URL:-}" ]; then
+      # Rewrite in place without ever echoing the password back to the screen.
+      python - "$ENV_FILE" "$PG_URL" <<'PY_SET'
+import sys
+path, url = sys.argv[1], sys.argv[2]
+lines = [l for l in open(path).read().splitlines() if not l.startswith("DATABASE_URL=")]
+note = "# SQLite is the fallback when this is unreachable; a bad URL must not strand the phone"
+lines.insert(3, f"DATABASE_URL={url}")
+lines.insert(4, note)
+open(path, "w").write("\n".join(lines) + "\n")
+PY_SET
+      chmod 600 "$ENV_FILE"
+      log "    DATABASE_URL set (cloud Postgres)"
+    fi
+  else
+    log "    DATABASE_URL empty: SQLite in DATA_DIR (non-interactive run)"
+  fi
+fi
+
+# A cloud URL that the phone cannot reach is the one failure mode that looks like a
+# broken app: check it now, while the operator is still looking at the screen.
+DB_URL="$(grep -E '^DATABASE_URL=.+' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
+if [ -n "${DB_URL:-}" ]; then
+  log "    checking the database URL"
+  if ! python - "$DB_URL" <<'PY_CHECK'
+import asyncio, sys
+from urllib.parse import urlsplit
+
+from sqlalchemy import text
+
+from meiko.config import Settings
+from meiko.db.base import create_engine
+
+url = sys.argv[1]
+parts = urlsplit(url)
+where = f"{parts.hostname}:{parts.port or 5432}"
+
+async def main() -> bool:
+    settings = Settings(database_url=url)
+    engine = create_engine(settings, settings.resolved_database_url)
+    try:
+        async with engine.connect() as conn:
+            await asyncio.wait_for(conn.execute(text("select 1")), timeout=20)
+        print(f"    reachable: {where}")
+        return True
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        print(f"    NOT reachable: {where}")
+        print(f"      {type(exc).__name__}: {str(exc).splitlines()[0][:160]}")
+        if (parts.hostname or "").startswith("db.") and "supabase" in (parts.hostname or ""):
+            print("      That is Supabase's direct host: it is IPv6-only on the free")
+            print("      tier. Use the session pooler instead -- the same dashboard")
+            print("      page, connection method 'Session pooler', port 5432.")
+        else:
+            print("      Check the password, the project (a paused project has no")
+            print("      endpoint), and that the phone has a working connection.")
+        return False
+    finally:
+        await engine.dispose()
+
+sys.exit(0 if asyncio.run(main()) else 1)
+PY_CHECK
+  then
+    warn "the database URL is in $ENV_FILE and does not work from this phone"
+    warn "fix it, or remove that line to fall back to SQLite in DATA_DIR"
+  fi
+fi
+
 cat <<EOF
 
 Next steps

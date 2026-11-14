@@ -147,8 +147,22 @@ sandbox, starts Redis and writes a `~600` env file with generated keys. Then:
 
 ```bash
 termux-wake-lock                 # stop Android from freezing the process
-bash scripts/termux_boot.sh      # migrate + start, idempotent, logs to ~/meiko.log
+bash scripts/termux_boot.sh      # start; idempotent, logs to ~/meiko.log
 ```
+
+**Keeping the data in the cloud.** The setup script offers to take a Postgres URL, so
+the phone can hold no state at all (see the section above for the exact Supabase
+string). Two guards come with it:
+
+* It **tests the URL before it finishes** and says which host was unreachable. That
+  matters because Supabase's direct host `db.<ref>.supabase.co` is IPv6-only on the
+  free tier — measured here: `OSError: [Errno 101] Network is unreachable` — while the
+  session pooler on port 5432 reached the server on the same network.
+* `termux_boot.sh` **does not migrate** unless you ask it to (`MEIKO_MIGRATE=1`). A
+  boot script can run several times a day on a phone, and running DDL against a cloud
+  database on every wake-up is not something to leave to a device that Android may
+  kill mid-transaction. Run `python start.py --service migrate` once when you change
+  versions.
 
 Put `scripts/termux_boot.sh` in `~/.termux/boot/` (Termux:Boot app) and the bot comes
 back after a reboot on its own. Two honest limits: the phone is not a server, so
