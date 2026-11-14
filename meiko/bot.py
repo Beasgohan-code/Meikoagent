@@ -92,6 +92,11 @@ class BotApplication:
     started_at: float = 0.0
     healthy: bool = False
     last_error: str | None = None
+    #: When the polling loop last began an iteration.  ``healthy`` is set once at
+    #: start and stays true while aiogram retries internally, so on its own it can
+    #: claim a bot is fine when the network has been gone for hours -- the complaint
+    #: "keep-alive is bad sometimes" is really "nothing noticed it died".
+    last_poll_at: float = 0.0
 
     # -- assembly --------------------------------------------------------
     def build_dispatcher(self) -> Dispatcher:
@@ -186,6 +191,7 @@ class BotApplication:
         assert self.bot is not None
         backoff = 1.0
         while not self._stopping.is_set():
+            self.last_poll_at = time.time()
             try:
                 await self.bot.delete_webhook(drop_pending_updates=False)
                 await self.dispatcher.start_polling(  # type: ignore[union-attr]
@@ -193,6 +199,7 @@ class BotApplication:
                     allowed_updates=allowed,
                     handle_signals=False,
                     close_bot_session=False,
+                    polling_timeout=self.polling_timeout,
                 )
                 return
             except TelegramConflictError as exc:
@@ -254,10 +261,53 @@ class BotApplication:
         log.info("bot %s stopped", self.bot_id)
 
     # -- health ----------------------------------------------------------
+    @property
+    def polling_timeout(self) -> int:
+        """Long-poll timeout, in seconds."""
+        return int(get_settings().telegram_polling_timeout)
+
+    def liveness(self, *, stale_after: float | None = None) -> dict[str, Any]:
+        """Is the bot actually being serviced right now?
+
+        Three independent things must hold, and any one of them failing is what
+        makes a bot "silently down":
+
+        * the process is not stopping;
+        * the polling task exists and has not finished (a crashed loop, a token
+          conflict, a rejected token all end it);
+        * the loop has run recently.  ``healthy`` alone is not enough: it is set at
+          start and aiogram keeps retrying inside, so a bot can look healthy while
+          nothing has reached Telegram for an hour.
+
+        ``stale_after`` defaults to three poll windows plus a minute of slack.
+        """
+        limit = stale_after if stale_after is not None else self.polling_timeout * 3 + 60
+        age = time.time() - self.last_poll_at if self.last_poll_at else None
+        reasons: list[str] = []
+        if self._stopping.is_set():
+            reasons.append("stopping")
+        if not (self._polling_task and not self._polling_task.done()):
+            reasons.append("polling task is not running")
+        if age is None:
+            reasons.append("polling has not started")
+        elif age > limit:
+            reasons.append(f"polling last ran {int(age)}s ago (limit {int(limit)}s)")
+        if not self.healthy:
+            reasons.append(self.last_error or "runtime marked unhealthy")
+        return {
+            "alive": not reasons,
+            "reasons": reasons,
+            "last_poll_age_seconds": int(age) if age is not None else None,
+            "stale_after_seconds": int(limit),
+        }
+
     def health(self) -> dict[str, Any]:
+        liveness = self.liveness()
         return {
             "bot_id": self.bot_id,
-            "status": "running" if self.healthy else "stopped",
+            "status": "running" if liveness["alive"] else "stopped",
+            "alive": liveness["alive"],
+            "liveness": liveness,
             "mode": self.runtime_mode,
             "username": self.username,
             "uptime_seconds": int(time.time() - self.started_at) if self.started_at else 0,

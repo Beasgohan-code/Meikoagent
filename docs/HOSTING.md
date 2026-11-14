@@ -38,6 +38,36 @@ at `docs/MODULES.md` §6 and says what the service is *for* (running your own bo
 your own chats), not an argument. Do not create another account to work around a
 suspension — that is what turns one suspension into a pattern.
 
+## Why "just copy Videl1's keep-alive" is not the answer
+
+`Beasgohan-code/Videl1` bundles two things that look like one:
+
+| Videl1 | What it does | Verdict |
+| --- | --- | --- |
+| `VidelBot/keep_alive.py` | serves `/` and `/health` on `$PORT` | **Good, and now copied in spirit**: the API already serves `/health`, `/health/live`, `/ready`; it now also adopts `$PORT` and reports per-bot liveness |
+| the same file's self-ping | `GET {KEEP_ALIVE_URL}/ping` every `KEEP_ALIVE_INTERVAL` | **Not copied.** Its own docstring says *"so the platform never idles the process"*, and `render.yaml` says the free plan *"never sleeps"* because the server *"pings itself"*. That is the behaviour Render's AUP calls circumventing a usage restriction — the reason the accounts went. |
+| `render.yaml` | `plan: free`, `healthCheckPath: /health` | partially copied: the health check idea yes, the free plan no (`plan: starter`) |
+
+So the "keep-alive" that is actually broken on a free tier cannot be fixed by a
+better timer. What *can* be fixed is that nothing noticed the bot was dead. That is
+now real:
+
+* **`BotApplication.liveness()`** = not stopping **and** the polling task is alive
+  **and** the loop ran within `3 × telegram_polling_timeout + 60s` **and** the
+  runtime is not marked failed. `healthy` alone is not accepted: it is set once at
+  start while aiogram keeps retrying internally, which is how a bot looks fine and
+  answers nothing for hours.
+* **`GET /health`** now includes a `bots` block (`workers`, `alive`, `stale`,
+  `errors`, `serving`).
+* **`GET /health/bots`** returns `503` when any running bot is not being serviced —
+  point an uptime monitor or a platform health check at it, and the restart is
+  automated instead of invisible.
+* **`$PORT` is adopted** (Render/Railway/Heroku/Koyeb assign one). Before this the
+  API always listened on 8000, so a platform probing the assigned port saw an
+  unhealthy service and cycled it — another way a "running" bot is really down.
+* **`telegram_polling_timeout`** is now explicit, so the staleness window scales with
+  how long a long-poll is expected to block.
+
 ## A deployment shape that is not a policy problem
 
 Every long-running process here is a normal worker, not a web service:

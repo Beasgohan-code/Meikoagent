@@ -14,7 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -32,6 +32,20 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def _honour_platform_port(self) -> "Settings":
+        """Take ``$PORT`` when the host assigns one (Render, Railway, Heroku, Koyeb).
+
+        These platforms route traffic to a single port and probe it for health.  An
+        API listening on 8000 while the platform expects 10000 is marked unhealthy and
+        restarted in a loop - which looks exactly like "keep-alive is broken".
+        An explicit ``API_PORT`` still wins.
+        """
+        platform_port = os.getenv("PORT", "").strip()
+        if platform_port.isdigit() and os.getenv("API_PORT", "").strip() == "":
+            object.__setattr__(self, "api_port", int(platform_port))
+        return self
 
     # ------------------------------------------------------------------ core
     app_name: str = "MEIKO AGENT"
@@ -77,6 +91,9 @@ class Settings(BaseSettings):
 
     # --------------------------------------------------------------- telegram
     bot_token: str = ""
+    #: Long-poll timeout for bot workers.  Liveness is measured against a multiple
+    #: of this, so raising it widens the window before a bot is called stale.
+    telegram_polling_timeout: int = 30
     owner_telegram_ids: str = ""
     webhook_url: str = ""
     webhook_secret: str = ""

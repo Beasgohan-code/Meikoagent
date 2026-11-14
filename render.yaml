@@ -1,0 +1,74 @@
+# Render Blueprint: a *keeper* deployment, not an idle-policy workaround.
+#
+#   Dashboard -> New -> Blueprint -> pick this repository.
+#
+# Why it is shaped this way (see docs/HOSTING.md):
+#
+# * `meiko` is a **web service** running everything in one process: the API, the
+#   scheduler, the watchdog and the bot runtimes.  It answers real inbound traffic on
+#   `/health`, which is what keeps a web service awake on its own.  Nothing pings
+#   itself.
+# * The health check points at `/health/live`, which reports the web process only.
+#   `/health` additionally reports per-bot liveness, so a bot that stopped polling
+#   turns the service red and the platform restarts it.  That is the honest version of
+#   "keep-alive": detection plus restart, not a timer that pretends to be traffic.
+# * `plan: free` is deliberately **not** used.  Free instances sleep after idle time;
+#   a Telegram bot polls outbound and receives almost no inbound traffic, so it
+#   would sleep and then the only way to stay up would be self-pinging, which is what
+#   gets accounts suspended.  Use an always-on plan, or run the workers on a VPS with
+#   `docker compose up`.
+# * No `SECRET_KEY` here: it must be set in the dashboard (the API refuses to boot
+#   without it in production, and a generated one logs everyone out on restart).
+
+services:
+  - type: web
+    name: meiko
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    region: singapore
+    numInstances: 1
+    healthCheckPath: /health/live
+    autoDeploy: true
+    envVars:
+      # -- required, set these in the dashboard (sync: false = never committed) --
+      - key: BOT_TOKEN
+        sync: false
+      - key: OWNER_TELEGRAM_IDS
+        sync: false
+      - key: SECRET_KEY
+        sync: false          # 32+ chars; startup refuses without it in production
+      - key: ENCRYPTION_KEY
+        sync: false          # seals bot tokens *and* signs link claim tokens
+      - key: DATABASE_URL
+        sync: false          # postgresql+asyncpg://..., e.g. a Supabase connection string
+      - key: REDIS_URL
+        sync: false          # required for more than one process
+      # -- routing --
+      - key: PORT
+        fromService:
+          type: web
+          name: meiko
+          envVarKey: PORT     # platforms assign $PORT; the API adopts it
+      # -- behaviour --
+      - key: ENVIRONMENT
+        value: production
+      - key: AUTO_CREATE_SCHEMA
+        value: "false"       # Alembic owns the schema: run --service migrate first
+      - key: RUN_MAIN_BOT
+        value: "true"
+      - key: SCHEDULER_ENABLED
+        value: "true"
+      - key: WATCHDOG_ENABLED
+        value: "true"
+      - key: AUTH_DEV_MODE
+        value: "false"
+      - key: DATA_DIR
+        value: /data
+      - key: LOG_FORMAT
+        value: json
+    disk:
+      name: meiko-data
+      mountPath: /data
+      sizeGB: 1

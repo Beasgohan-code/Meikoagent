@@ -246,8 +246,8 @@ Bot API 10.4 widgets are handled by a typed adapter, and `allowed_updates` inclu
 
 ## API
 
-Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 146 documented paths
-(164 operations),
+Base prefix `/api/v1`, OpenAPI at `/openapi.json`, interactive docs at `/docs`. 147 documented paths
+(165 operations),
 including the media-module surface (`/music`, `/encoder`, `/saver`, `/filestore`, `/linkshare`, `/leech`,
 `/platform`) — see `docs/MODULES.md` §7.
 
@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1047 tests
+python -m pytest -q          # 1062 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -341,8 +341,12 @@ Everything is environment driven — see `.env.example`. Key settings:
 
 ## Operations
 
-- **Health:** `GET /health` (dependencies), `GET /health/live` (liveness), `GET /ready` (readiness, 503
-  when the database is down), `python start.py --service health` for container probes.
+- **Health:** `GET /health` (dependencies **and** per-bot liveness), `GET /health/live`
+  (process only), `GET /health/bots` (503 when a bot that should be running is not
+  being serviced), `GET /ready` (readiness, 503 when the database is down),
+  `python start.py --service health` for container probes.
+- **Ports:** `$PORT` from the platform is adopted when `API_PORT` is unset, so a host
+  that assigns a port and probes it sees a healthy service.
 - **Migrations:** `python start.py --service migrate` (or `alembic upgrade head`). Autogenerate with
   `alembic revision --autogenerate -m "…"`.
 - **Scaling:** run one `api` (or several behind a proxy), one or more `worker` processes, one
@@ -354,8 +358,10 @@ Everything is environment driven — see `.env.example`. Key settings:
   500-after-boot bugs first; see `docs/DEPLOYMENT.md` §5.
 - **Hosting:** a bot that long-polls Telegram is a worker, not a web service. Free
   tiers sleep on inbound-traffic idleness and treat self-pinging as circumvention, so
-  `keep_alive`'s timer is off by default. Read `docs/HOSTING.md` before deploying;
-  it lists what a host's reviewer looks for and what to run where.
+  `keep_alive`'s timer is off by default. Read `docs/HOSTING.md` before deploying; it
+  lists what a host's reviewer looks for, what to run where, and why copying Videl1's
+  self-ping changes nothing but the risk. `render.yaml` is an always-on Blueprint that
+  runs everything in one service and health-checks `/health/live`.
 - **Dependency gate:** Vercel rejects a deploy when `next` has a known advisory even though the
   build succeeds. `tests/test_docs_contract.py` checks the pins in `webapp/package-lock.json`, so
   a stale framework version fails the suite instead of only failing a deploy.

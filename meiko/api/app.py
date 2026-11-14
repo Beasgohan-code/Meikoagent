@@ -68,6 +68,41 @@ def _verify_deployment_settings(settings) -> None:
         )
 
 
+def _bot_liveness() -> dict[str, Any]:
+    """Summarise whether the bots this process owns are actually being serviced.
+
+    A host health check that only proves "the web process answers" will happily
+    keep a service alive while every bot in it has stopped polling.  That is the
+    real complaint behind "keep-alive is bad sometimes": nothing noticed.  This
+    counts the runtimes that are alive, stale, or failed, from each application's
+    own liveness, and the full detail is at ``/health/bots``.
+    """
+    from meiko.runtime.manager import get_worker_manager
+
+    manager = get_worker_manager()
+    alive: list[int] = []
+    stale: list[int] = []
+    failed: dict[str, str] = {}
+    for bot_id, application in manager.state.applications.items():
+        try:
+            check = application.liveness()
+        except Exception as exc:  # pragma: no cover - defensive
+            failed[str(bot_id)] = str(exc)
+            continue
+        if check["alive"]:
+            alive.append(bot_id)
+        else:
+            stale.append(bot_id)
+            failed[str(bot_id)] = "; ".join(check["reasons"]) or "unhealthy"
+    return {
+        "workers": len(manager.running_ids()),
+        "alive": sorted(alive),
+        "stale": sorted(stale),
+        "errors": failed,
+        "serving": bool(alive) or not manager.running_ids(),
+    }
+
+
 async def lifespan(app: FastAPI):
     settings = get_settings()
     _verify_deployment_settings(settings)
@@ -237,6 +272,7 @@ def create_app() -> FastAPI:
         status = "ok" if db["status"] == "ok" and cache["status"] == "ok" else "degraded"
         return {
             "status": status,
+            "bots": _bot_liveness(),
             "service": "api",
             "version": __version__,
             "bot_api": BOT_API_VERSION,
@@ -256,6 +292,26 @@ def create_app() -> FastAPI:
     @app.get("/health/live", tags=["health"])
     async def live() -> dict[str, str]:
         return {"status": "alive"}
+
+    @app.get("/health/bots", tags=["health"])
+    async def health_bots() -> JSONResponse:
+        """Per-bot liveness, for a host probe with a stricter check than /health/live.
+
+        Returns 503 when a bot that should be running is not being serviced, so a
+        platform that restarts on unhealthy responses recovers by itself instead of
+        serving a dead bot silently.
+        """
+        from meiko.runtime.manager import get_worker_manager
+
+        manager = get_worker_manager()
+        bots = {}
+        for bot_id, application in manager.state.applications.items():
+            bots[str(bot_id)] = application.liveness()
+        ok = all(entry["alive"] for entry in bots.values())
+        return JSONResponse(
+            status_code=200 if ok else 503,
+            content={"healthy": ok, "count": len(bots), "bots": bots},
+        )
 
     # -------------------------------------------------------------- bot api
     @app.post(f"{prefix}/telegram/webhook/{{bot_id}}", tags=["webhooks"])
