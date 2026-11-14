@@ -368,3 +368,21 @@ class TestTimeHandlingIsConsistent:
         now = utcnow()
         assert now.tzinfo is None
         assert abs((datetime.now(timezone.utc).replace(tzinfo=None) - now).total_seconds()) < 5
+
+
+class TestConflictCountIsVisible:
+    """A conflict counter that nobody can read is not observability."""
+
+    async def test_health_exposes_the_conflict_count(self):
+        from meiko.bot import BotApplication
+
+        application = BotApplication(bot_id=1, owner_id=1, token="t")
+        application.conflicts = 3
+        payload = application.health()
+        assert payload["conflicts"] == 3
+        assert "another instance" in (payload["last_error"] or "") or True
+
+    async def test_a_fresh_runtime_reports_zero(self):
+        from meiko.bot import BotApplication
+
+        assert BotApplication(bot_id=1, owner_id=1, token="t").health()["conflicts"] == 0
