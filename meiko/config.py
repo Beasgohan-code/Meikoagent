@@ -236,17 +236,26 @@ class Settings(BaseSettings):
 
     @property
     def database_is_pooled(self) -> bool:
-        """True for a transaction pooler (Supabase pgbouncer, pgBouncer, RDS proxy)."""
+        """True for a **transaction-mode** pooler where DDL and prepared statements break.
+
+        Only transaction mode is a hazard. Supabase's *session* pooler answers on
+        port **5432** on the same ``…pooler.supabase.com`` host and is a perfectly
+        good target for migrations and for asyncpg; treating it as pooled raised a
+        false alarm and pushed operators off the one free-tier endpoint that works
+        over IPv4. Port decides, with the explicit legacy markers kept as a fallback
+        for hosts that keep the transaction port behind a different name.
+        """
         from urllib.parse import urlsplit
 
         url = self.resolved_database_url
         lowered = url.lower()
-        if "pooler" in lowered or "pgbouncer" in lowered:
-            return True
         try:
-            return urlsplit(url).port == 6543
+            port = urlsplit(url).port
         except ValueError:  # pragma: no cover
-            return False
+            port = None
+        if port is not None:
+            return port == 6543
+        return "pgbouncer" in lowered or "pool_mode=transaction" in lowered
 
     @property
     def migration_database_url(self) -> str:

@@ -92,3 +92,83 @@ class TestPoolerVsMigrations:
             environment="production",
         )
         assert migration_url_problem(settings) is None
+
+
+class TestSessionPoolerIsNotTheTransactionPooler:
+    """Supabase's IP story: the session pooler is the *only* free endpoint over IPv4.
+
+    Treating every ``…pooler.supabase.com`` host as a transaction pooler warned
+    operators off the one connection that works from a phone or an IPv4-only
+    network — a false alarm, not a safety net.
+    """
+
+    def test_the_session_pooler_is_not_treated_as_pooled(self):
+        from meiko.config import Settings, migration_url_problem
+
+        settings = Settings(
+            database_url=(
+                "postgresql://postgres.ref:pw@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+                "?sslmode=require"
+            ),
+            environment="production",
+        )
+        assert settings.database_is_pooled is False
+        assert migration_url_problem(settings) is None
+
+    def test_the_transaction_pooler_still_is(self):
+        from meiko.config import Settings
+
+        settings = Settings(
+            database_url="postgresql://postgres.ref:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres",
+            environment="production",
+        )
+        assert settings.database_is_pooled is True
+
+    def test_a_legacy_pooler_host_without_a_port_is_conservative(self):
+        from meiko.config import Settings
+
+        settings = Settings(
+            database_url="postgresql://u:p@pgbouncer.internal/postgres",
+            environment="production",
+        )
+        assert settings.database_is_pooled is True
+
+
+class TestPreparedStatementsOffOnATransactionPooler:
+    """Transaction pooling moves statements between backends; asyncpg must not cache."""
+
+    def test_statement_caching_is_disabled_for_a_pooled_url(self):
+        from meiko.config import Settings
+        from meiko.db.base import _engine_kwargs
+
+        settings = Settings(
+            database_url="postgresql://postgres.ref:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres",
+            environment="production",
+        )
+        connect_args = _engine_kwargs(settings, settings.resolved_database_url).get("connect_args", {})
+        assert connect_args.get("statement_cache_size") == 0
+
+    def test_a_direct_connection_keeps_the_cache(self):
+        from meiko.config import Settings
+        from meiko.db.base import _engine_kwargs
+
+        settings = Settings(
+            database_url="postgresql://u:p@db.abcdefgh.supabase.co:5432/postgres",
+            environment="production",
+        )
+        connect_args = _engine_kwargs(settings, settings.resolved_database_url).get("connect_args", {})
+        assert "statement_cache_size" not in connect_args
+
+    def test_the_ssl_connection_args_survive_the_addition(self):
+        """Both fixes have to be able to land on the same connect_args dict."""
+        from meiko.config import Settings
+        from meiko.db.base import create_engine  # noqa: F401  (import proves it loads)
+        from meiko.db.base import strip_libpq_ssl
+
+        url = (
+            "postgresql+asyncpg://postgres.ref:pw@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+            "?sslmode=require"
+        )
+        cleaned, connect_args = strip_libpq_ssl(url)
+        assert "sslmode" not in cleaned
+        assert connect_args["ssl"] is True

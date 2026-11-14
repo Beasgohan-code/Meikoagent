@@ -271,3 +271,60 @@ class TestTermuxScriptsAreHonest:
         # honest about the free tiers that sleep
         assert "sleeps on idle" in doc or "sleep" in doc
         assert "GitHub Actions" in doc
+
+
+class TestPostgresClaimIsEarned:
+    """The README may not keep saying Postgres is unverified once it has been run.
+
+    The chain is executed for real elsewhere (a throwaway schema on a live
+    PostgreSQL 17 server, rolled back); this pins the claim to the evidence so
+    the "not claimed" list cannot silently regain a stale caveat.
+    """
+
+    @pytest.fixture(scope="class")
+    def readme(self) -> str:
+        return (ROOT / "README.md").read_text()
+
+    def test_postgres_is_no_longer_disclaimed(self, readme):
+        tail = readme.split("Not verified here, and therefore not claimed", 1)
+        assert len(tail) == 2, "the non-claim paragraph moved or was deleted"
+        assert "PostgreSQL" not in tail[1] and "Postgres" not in tail[1], (
+            "the chain has been executed on real PostgreSQL; stop disclaiming it"
+        )
+
+    def test_the_real_server_run_is_reported_with_numbers(self, readme):
+        section = readme.split("## How this was verified", 1)[1]
+        assert "PostgreSQL 17" in section
+        assert "rolled back" in section
+        assert "404947bb2f88" in section
+
+    def test_no_document_claims_postgres_is_untested(self):
+        for path in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+            text = path.read_text()
+            for phrase in (
+                "no real PostgreSQL",
+                "no real Postgres",
+                "Postgres untested",
+                "cannot be verified without a server",
+            ):
+                assert phrase not in text, f"{path.name} still says {phrase!r}"
+
+
+class TestSupabaseGuidanceIsReachable:
+    """The documented Supabase URL must be one a phone can actually connect to."""
+
+    def test_the_docs_warn_that_the_direct_host_is_ipv6_only(self):
+        for name in ("DEPLOYMENT.md", "HOSTING.md"):
+            text = (ROOT / "docs" / name).read_text()
+            assert "IPv6" in text, f"{name} offers a host that free-tier IPv4 cannot reach"
+
+    def test_the_documented_url_is_the_session_pooler_on_5432(self):
+        deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text()
+        assert "pooler.supabase.com:5432" in deployment
+        assert "5432 is session mode, 6543 is transaction mode" in deployment
+
+    def test_no_document_tells_a_phone_user_to_use_the_direct_host_only(self):
+        hosting = (ROOT / "docs" / "HOSTING.md").read_text()
+        assert "Session pooler" in hosting
+        # the old advice paired a 6543 app URL with the IPv6-only migration host
+        assert "postgres.<ref>:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require\n\npython start.py" not in hosting

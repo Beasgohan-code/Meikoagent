@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1130 tests
+python -m pytest -q          # 1142 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -415,11 +415,16 @@ could not be:
 | `GET /health`, `/health/live`, `/health/bots` | `200`, per-bot liveness block included |
 | `$PORT` adoption | API came up on the assigned port rather than 8000 |
 | Vercel | deploy `READY`; the earlier failures were `VULNERABLE_NEXTJS_VERSION` until `next` was patched |
+| the whole Alembic chain, executed by a **real PostgreSQL 17.11** server (Supabase, `ap-south-1`) | all 125 statements applied inside one transaction, in a throwaway schema, then rolled back: **35 tables**, **19/19** required tables present, **53** foreign keys, **131** indexes, head `404947bb2f88`, `id` backed by a real `SERIAL` sequence (`meiko_verify.bots_id_seq`), timestamps stored as `timestamp without time zone` |
+
+The PostgreSQL run is repeatable: `alembic upgrade head --sql` renders the whole chain, and
+running that script against any empty schema proves the migration works on the target
+engine — not merely that the SQL parses. The schema was created and dropped in the same
+transaction, so the database it was run against was left byte-for-byte unchanged
+(verified afterwards: no leftover schema, still 23 pre-existing `public` tables).
 
 **Not verified here, and therefore not claimed:** live Telegram polling (this sandbox
-cannot reach `api.telegram.org`), a real PostgreSQL/Supabase migration (no server
-reachable from here — the URL handling is tested, the connection is not), real Redis
-(no binary), and voice-chat streaming.
+cannot reach `api.telegram.org`), a real Redis (no binary), and voice-chat streaming.
 
 ## What is deliberately *not* claimed
 

@@ -45,6 +45,13 @@ def _engine_kwargs(settings: Settings, url: str) -> dict[str, Any]:
         pool_pre_ping=True,
         pool_recycle=1800,
     )
+    if settings.database_is_pooled:
+        # A transaction-mode pooler hands out a different backend connection between
+        # statements, so a statement prepared on one is executed on another and
+        # asyncpg fails with InvalidSQLStatementNameError.  Supabase and PgBouncer
+        # both require caching to be off on that endpoint; it is also pointless
+        # there, since the pooler reuses the server-side statements itself.
+        kwargs.setdefault("connect_args", {})["statement_cache_size"] = 0
     return kwargs
 
 

@@ -82,17 +82,18 @@ a copied connection string fail, and all three are now handled explicitly:
    parameter is moved into a real connect argument (`ssl=True`), so the URL still says
    `sslmode=require` and the connection actually uses TLS. A **remote** Postgres
    without TLS refuses to boot in production instead of failing mid-query.
-3. **Pooler vs migrations.** Supabase's pooler (`…pooler.supabase.com:6543`,
-   transaction mode) cannot run multi-statement DDL. Set `MIGRATION_URL` to the direct
-   connection (`db.<ref>.supabase.co:5432`) and run migrations first:
+3. **Pooler vs migrations.** Port **5432** on the pooler host is *session* mode and
+   does everything; port **6543** is *transaction* mode, which cannot run
+   multi-statement DDL and moves prepared statements between backends. Use 5432, and
+   from a phone use the pooler host at all: `db.<ref>.supabase.co` is IPv6-only on the
+   free tier and simply times out over IPv4.
 
 ```bash
-# Supabase dashboard → Project Settings → Database → Connection string
-DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
-MIGRATION_URL=postgresql://postgres.<ref>:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+# Supabase dashboard → Connect → Connection method: Session pooler
+DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
 
-python start.py --service migrate     # uses MIGRATION_URL
-python start.py --service api         # uses DATABASE_URL
+python start.py --service migrate     # 5432 handles DDL, so no MIGRATION_URL needed
+python start.py --service api         # same URL
 ```
 
 `python start.py --service migrate` also seeds the plugin catalogue, so a fresh

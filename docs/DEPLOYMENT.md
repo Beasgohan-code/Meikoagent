@@ -19,19 +19,30 @@ The third shape is the one with traps, so it gets the detail. The first two are
    management API answers `Database is possibly not accessible at the moment`
    and every connection fails. Resume it in the dashboard first; nothing in this
    repository will resume it for you.
-2. **Connection string.** Use the *pooled* connection for the app and the direct
-   one for migrations:
+2. **Connection string.** The direct host `db.<ref>.supabase.co` is **IPv6-only**
+   on the free tier, and an IPv4 address for it is a paid add-on. On a phone
+   connection, a CI runner, or any IPv4-only network that host simply times out —
+   so use the **session pooler**, which is proxied over IPv4 at no cost:
 
    ```
-   # app (pgbouncer, transaction mode) — note the port
-   DATABASE_URL=postgresql+asyncpg://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
-   # migrations (direct)
-   MIGRATION_URL=postgresql+asyncpg://postgres.<ref>:<password>@db.<ref>.supabase.co:5432/postgres
+   # app AND migrations — session mode, IPv4, free
+   DATABASE_URL=postgresql+asyncpg://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
    ```
 
-   pgbouncer in transaction mode cannot run multi-statement DDL reliably, so run
-   `python -m alembic upgrade head` against the direct URL, then start the app on
-   the pooled one.
+   Note the port: **5432 is session mode, 6543 is transaction mode**. Session mode
+   holds one backend connection for the life of the connection, which is what DDL,
+   advisory locks and `SET` need, so the same URL runs the migrations and the app
+   and `MIGRATION_URL` can be left empty. On a network with working IPv6 the direct
+   host also works for migrations:
+
+   ```
+   MIGRATION_URL=postgresql+asyncpg://postgres:<password>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+   ```
+
+   Only the *transaction* pooler (6543) is unusable for migrations: it hands out a
+   different backend between statements, so multi-statement DDL fails halfway and
+   prepared statements raise `InvalidSQLStatementNameError`. Pointing the app at it
+   is supported — statement caching is disabled automatically when the port is 6543.
 3. **Schema.** `AUTO_CREATE_SCHEMA=0` in a hosted deployment: Alembic owns the
    schema. On first boot run the migration; afterwards `alembic check` should say
    *No new upgrade operations detected*.
