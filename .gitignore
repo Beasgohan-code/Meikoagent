@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data / runtime
+data/
+logs/
+*.db
+*.sqlite3
+*.log
+
+# Node
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Misc
+.DS_Store
+.idea/
+.vscode/
+
+# next.js build artifacts
+webapp/tsconfig.tsbuildinfo
+webapp/.next/

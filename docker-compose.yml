@@ -1,0 +1,153 @@
+# MEIKO AGENT – production-shaped local stack.
+#
+#   docker compose up --build
+#   webapp  -> http://localhost:3000   (Next.js console, proxies /api/backend)
+#   api     -> http://localhost:8000   (FastAPI control plane, /docs)
+#
+# Services run from the same image with explicit per-service commands so the
+# control plane, bot workers, scheduler and watchdog can scale independently.
+
+name: meiko-agent
+
+x-backend-env: &backend-env
+  ENVIRONMENT: production
+  AUTO_CREATE_SCHEMA: "false"
+  DATABASE_URL: postgresql+asyncpg://meiko:${POSTGRES_PASSWORD:-meiko}@postgres:5432/meiko
+  REDIS_URL: redis://redis:6379/0
+  DATA_DIR: /data
+  LOG_FORMAT: json
+  LOG_LEVEL: INFO
+  API_HOST: 0.0.0.0
+  API_PORT: "8000"
+  CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+  AUTH_DEV_MODE: "false"
+  RUN_MAIN_BOT: "true"
+  SCHEDULER_ENABLED: "true"
+  WATCHDOG_ENABLED: "true"
+  SECRET_KEY: ${SECRET_KEY:-}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+  BOT_TOKEN: ${BOT_TOKEN:-}
+  OWNER_TELEGRAM_IDS: ${OWNER_TELEGRAM_IDS:-}
+  WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: meiko
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meiko}
+      POSTGRES_DB: meiko
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meiko -d meiko"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      target: backend
+    command: ["python", "start.py", "--service", "migrate"]
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: backend
+    command: ["python", "start.py", "--service", "api"]
+    environment: *backend-env
+    volumes:
+      - meiko-data:/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  bot:
+    build:
+      context: .
+      target: backend
+    command: ["python", "start.py", "--service", "bot"]
+    environment: *backend-env
+    volumes:
+      - meiko-data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      target: backend
+    command: ["python", "start.py", "--service", "scheduler"]
+    environment: *backend-env
+    volumes:
+      - meiko-data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  watchdog:
+    build:
+      context: .
+      target: backend
+    command: ["python", "start.py", "--service", "watchdog"]
+    environment: *backend-env
+    volumes:
+      - meiko-data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  webapp:
+    build:
+      context: .
+      target: webapp
+    environment:
+      MEIKO_API_URL: http://api:8000
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  meiko-data:

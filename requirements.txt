@@ -1,0 +1,26 @@
+# MEIKO AGENT – backend runtime
+aiogram==3.31.0
+fastapi==0.162.5
+uvicorn[standard]==0.54.0
+SQLAlchemy==2.1.8
+alembic==1.20.1
+asyncpg==0.32.0
+aiosqlite==0.22.1
+greenlet==3.5.6
+redis==8.1.0
+pydantic==2.13.5
+pydantic-settings==2.16.2
+cryptography==50.0.2
+httpx==0.28.1
+croniter==7.0.0
+python-multipart==0.0.33
+Pillow==13.0.0
+# --- media modules -----------------------------------------------------------
+# Site extraction for music/leech. Optional at runtime: the modules report the
+# layer as unavailable instead of failing when the package is absent.
+yt-dlp==2026.10.26
+# Metadata tags for /tag (the in-tree ID3 writer stays the default for MP3).
+mutagen==1.48.1
+# Ships a static ffmpeg for hosts with no system package (ffprobe is NOT included;
+# meiko/modules/toolchain.py falls back to parsing ffmpeg's banner).
+imageio-ffmpeg==0.8.1
