@@ -801,3 +801,35 @@ class TestDurablePluginState:
 
         with pytest.raises(PluginError):
             _ = Bare().state
+
+
+class TestKeepAliveIsNotAnIdleEvasion:
+    """A self-ping that resets a host's idle timer is grounds for suspension.
+
+    Render's Acceptable Use Policy prohibits bypassing "access or usage
+    restrictions", and free web services sleep after a period with no inbound
+    traffic.  The heartbeat feature is still useful on an always-on host, so it
+    stays -- but off, and it must not describe itself as keeping a free tier awake.
+    """
+
+    def test_the_ping_starts_disabled(self):
+        from meiko.plugins.builtin.keep_alive import plugin as keep_alive
+
+        instance = keep_alive.KeepAlivePlugin()
+        assert instance._enabled is False, "the self-ping timer must not run by default"
+
+    def test_the_manifest_does_not_promise_to_defeat_idle(self):
+        from meiko.plugins.builtin.keep_alive.manifest import MANIFEST
+
+        description = MANIFEST.description.lower()
+        assert "idle" not in description or "does not" in description.replace("-", " ")
+        assert "free-tier" not in description and "so free" not in description
+
+    def test_the_scheduled_job_does_not_fire_at_boot(self):
+        """A job that pings immediately on every restart is the noisy, useless version."""
+        import inspect
+
+        from meiko.plugins.builtin.keep_alive import plugin as keep_alive
+
+        source = inspect.getsource(keep_alive.KeepAlivePlugin.on_start)
+        assert "run_immediately=False" in source

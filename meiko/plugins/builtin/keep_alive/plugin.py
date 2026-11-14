@@ -35,7 +35,9 @@ class KeepAlivePlugin(MeikoPlugin):
         super().__init__()
         self._tracker = HeartbeatTracker()
         self._state: PluginState | None = None
-        self._enabled = True
+        #: Off by default: pinging to reset an idle timer is what gets a bot
+        #: suspended by its host.  An owner may enable it on a host they run.
+        self._enabled = False
         self._owner_id: int | None = None
         self._bot_username: str = ""
 
@@ -49,10 +51,12 @@ class KeepAlivePlugin(MeikoPlugin):
         router.message.register(self.on_command, F.text.startswith("/"), OWN_COMMAND)
         ctx.add_router(router)
         ctx.schedule(
-            "self_ping",
+            "heartbeat",
             int(self.config("interval_seconds", 300)),
             self.self_ping,
-            run_immediately=True,
+            # No longer runs immediately: the job now only reports, and a burst of
+            # calls at boot is noise on a restarting free-tier service.
+            run_immediately=False,
         )
 
     async def on_stop(self, ctx: PluginContext) -> None:
@@ -118,6 +122,11 @@ class KeepAlivePlugin(MeikoPlugin):
 
     # -- job -------------------------------------------------------------
     async def self_ping(self) -> None:
+        """Measure API reachability; keeps the *reporting* honest, nothing else.
+
+        Nothing here is meant to keep an idle service awake - if it were, it would
+        be circumventing the host's idle policy, which is grounds for suspension.
+        """
         ctx = self.context
         if ctx is None or not self._enabled:
             return

@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1044 tests
+python -m pytest -q          # 1047 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -352,6 +352,10 @@ Everything is environment driven — see `.env.example`. Key settings:
 - **Startup fails loudly, never quietly:** a stale schema (missing column) refuses to boot when
   Alembic owns the schema, and production refuses to boot without `SECRET_KEY`. Both were
   500-after-boot bugs first; see `docs/DEPLOYMENT.md` §5.
+- **Hosting:** a bot that long-polls Telegram is a worker, not a web service. Free
+  tiers sleep on inbound-traffic idleness and treat self-pinging as circumvention, so
+  `keep_alive`'s timer is off by default. Read `docs/HOSTING.md` before deploying;
+  it lists what a host's reviewer looks for and what to run where.
 - **Dependency gate:** Vercel rejects a deploy when `next` has a known advisory even though the
   build succeeds. `tests/test_docs_contract.py` checks the pins in `webapp/package-lock.json`, so
   a stale framework version fails the suite instead of only failing a deploy.

@@ -9,9 +9,10 @@ MANIFEST = PluginManifest(
     name="Keep Alive",
     version="1.0.0",
     description=(
-        "Self-ping Telegram on a timer so free-tier hosts do not idle the bot out, "
-        "track latency and failure streaks, and alert the owner once when the "
-        "connection drops (and once when it recovers)."
+        "Heartbeat for a always-on host: measures API latency and failure streaks "
+        "and alerts the owner once when the connection drops and once when it "
+        "recovers. It deliberately does not ping itself to defeat an idle policy - "
+        "use a plan that keeps the service running instead."
     ),
     category="utilities",
     icon="heartbeat",

@@ -314,6 +314,10 @@ the module docstring and in `docs/FEATURE_SUGGESTIONS.md`.
 * **No bypass, anywhere.** The saver validates authorization before every
   operation; `login`-style session features were refused; the MTProto adapter
   cannot read a chat its account is not a member of.
+* **No idle-policy evasion.** `keep_alive`'s self-ping timer is off by default and
+  documented as reporting only. Pinging a sleeping instance awake is what gets a
+  bot platform's hosting account suspended, and that is a deployment problem
+  (`docs/HOSTING.md`), not a feature.
 * **Secrets.** Bot tokens are Fernet-encrypted, fingerprinted and never returned
   by an API; shorteners/API keys are stored masked; FileStore exports omit
   credentials; logs redact tokens.
