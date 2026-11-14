@@ -21,10 +21,13 @@ from meiko.db.models import (
     BotCommandRecord,
     BotGroup,
     BotTemplate,
+    CommandExecution,
     GroupSettings,
     ModerationAction,
     Plugin,
     PluginInstallation,
+    PluginLog,
+    RuntimeEvent,
     User,
     utcnow,
 )
@@ -1043,12 +1046,61 @@ async def count_groups(session: AsyncSession, bot_id: int) -> int:
 
 
 async def purge_activity(session: AsyncSession, days: int = 90) -> int:
-    """Retention job used by the scheduler/watchdog."""
+    """Delete activity rows older than ``days``. Kept for the cleanup job handler."""
     cutoff = utcnow() - timedelta(days=days)
     result = await session.execute(
         delete(ActivityEvent).where(ActivityEvent.created_at < cutoff)
     )
     return int(result.rowcount or 0)
+
+
+async def run_retention(
+    session: AsyncSession,
+    *,
+    activity_days: int = 90,
+    command_log_days: int = 30,
+    runtime_event_days: int = 30,
+    plugin_log_days: int = 30,
+    batch_size: int = 5000,
+) -> dict[str, int]:
+    """Delete old log rows, bounded per call.
+
+    Every log table in this schema grows with usage and nothing ever deleted from
+    them: ``purge_activity`` existed but no caller existed, and the command log, the
+    runtime event feed and plugin logs had no retention at all.  On a managed
+    database with a small disk that ends in a full volume, which fails *writes* — the
+    bot keeps polling but stops recording, and eventually stops working.
+
+    Deletion is batched so a first run against a large table does not hold a long
+    transaction or a huge write lock; the job simply returns ``deleted < batch_size``
+    when there is more to do and the next tick continues.
+    """
+    cutoff_activity = utcnow() - timedelta(days=activity_days)
+    cutoff_logs = utcnow() - timedelta(days=command_log_days)
+    cutoff_events = utcnow() - timedelta(days=runtime_event_days)
+    cutoff_plugin = utcnow() - timedelta(days=plugin_log_days)
+
+    removed: dict[str, int] = {}
+
+    def _ids(model: Any, condition: Any) -> Any:
+        return (
+            select(model.id).where(condition).order_by(model.id).limit(batch_size).scalar_subquery()
+        )
+
+    plans = {
+        "activity_events": (ActivityEvent, ActivityEvent.created_at < cutoff_activity),
+        "command_executions": (
+            CommandExecution,
+            CommandExecution.created_at < cutoff_logs,
+        ),
+        "runtime_events": (RuntimeEvent, RuntimeEvent.created_at < cutoff_events),
+        "plugin_logs": (PluginLog, PluginLog.created_at < cutoff_plugin),
+    }
+    for name, (model, condition) in plans.items():
+        result = await session.execute(delete(model).where(model.id.in_(_ids(model, condition))))
+        removed[name] = int(result.rowcount or 0)
+    await session.flush()
+    return removed
 
 
 __all__ = [

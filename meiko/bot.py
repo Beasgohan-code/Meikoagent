@@ -220,6 +220,23 @@ class BotApplication:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
+    async def restart_polling(self) -> None:
+        """Drop the current polling task and start a fresh one.
+
+        Used by the watchdog when a runtime is alive-but-not-progressing: aiogram
+        retries internally, so a wedged HTTP session can leave the task running while
+        nothing reaches Telegram.  Cancelling and rebuilding is the only recovery that
+        does not require a process restart.
+        """
+        old = self._polling_task
+        if old is not None and not old.done():
+            old.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await old
+        self.healthy = False
+        self.last_poll_at = 0.0
+        await self.start_polling()
+
     async def feed_update(self, payload: dict[str, Any]) -> None:
         """Webhook entry point: widget updates first, then the aiogram dispatcher."""
         widget_update = extract_widget_update(payload)

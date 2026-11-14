@@ -215,6 +215,9 @@ class TestWatchdog:
         class DeadApp:
             _polling_task = DeadPollingTask()
 
+            def liveness(self):
+                return {"alive": False, "reasons": ["polling task is not running"]}
+
         async def fake_start(bot_id):
             return {"status": "error", "error": "test"}
 
@@ -224,6 +227,65 @@ class TestWatchdog:
         snapshot = await watchdog.run_once()
         assert bot.id in snapshot["dead_runtimes"]
         assert watchdog.recoveries
+
+    async def test_a_wedged_runtime_is_restarted_not_ignored(self, db, session, worker_manager):
+        """The task is still running but nothing has polled: crash recovery misses it."""
+        manager_module._manager = worker_manager
+        bot = await make_bot(session)
+        restarted = []
+
+        class RunningTask:
+            def done(self):
+                return False
+
+        class WedgedApp:
+            _polling_task = RunningTask()
+
+            def liveness(self):
+                return {
+                    "alive": False,
+                    "reasons": ["polling last ran 900s ago (limit 150s)"],
+                }
+
+            async def restart_polling(self):
+                restarted.append("restarted")
+
+        worker_manager.state.applications[bot.id] = WedgedApp()  # type: ignore[assignment]
+        watchdog = Watchdog(interval=5)
+        snapshot = await watchdog.run_once()
+        assert snapshot["stale_runtimes"] == [bot.id]
+        assert snapshot["dead_runtimes"] == []
+        assert snapshot["healthy"] is False
+        assert restarted == ["restarted"]
+        assert any(r.get("kind") == "stale" for r in watchdog.recoveries)
+
+    async def test_a_stale_restart_failure_falls_back_to_crash_recovery(
+        self, db, session, worker_manager
+    ):
+        manager_module._manager = worker_manager
+        bot = await make_bot(session)
+        crashed = []
+
+        class RunningTask:
+            def done(self):
+                return False
+
+        class BrokenApp:
+            _polling_task = RunningTask()
+
+            def liveness(self):
+                return {"alive": False, "reasons": ["stopping"]}
+
+            async def restart_polling(self):
+                raise RuntimeError("token rejected")
+
+        async def fake_crash(bot_id):
+            crashed.append(bot_id)
+
+        worker_manager.state.applications[bot.id] = BrokenApp()  # type: ignore[assignment]
+        worker_manager._handle_crash = fake_crash  # type: ignore[method-assign]
+        await Watchdog(interval=5).run_once()
+        assert crashed == [bot.id]
 
     async def test_stale_worker_marked(self, db, session):
         worker = Worker(
@@ -240,3 +302,87 @@ class TestWatchdog:
         await session.refresh(worker)
         refreshed = await session.get(Worker, worker.id)
         assert refreshed.status == "unresponsive"
+
+
+class TestRetention:
+    """Log tables grew forever: purge_activity existed but nothing called it."""
+
+    async def test_old_rows_are_deleted_and_recent_ones_kept(self, db, session):
+        from meiko.db.models import ActivityEvent, CommandExecution
+        from meiko.services.core import run_retention
+
+        bot = await make_bot(session)
+        old = datetime.utcnow() - timedelta(days=400)
+        session.add_all(
+            [
+                ActivityEvent(kind="old", created_at=old),
+                ActivityEvent(kind="fresh"),
+                CommandExecution(bot_id=bot.id, command="old", created_at=old),
+                CommandExecution(bot_id=bot.id, command="fresh"),
+            ]
+        )
+        await session.flush()
+        await session.commit()
+
+        removed = await run_retention(session)
+        await session.commit()
+        assert removed["activity_events"] == 1
+        assert removed["command_executions"] == 1
+
+        from sqlalchemy import select
+
+        kinds = list((await session.scalars(select(ActivityEvent.kind))).all())
+        commands = list((await session.scalars(select(CommandExecution.command))).all())
+        assert kinds == ["fresh"]
+        assert commands == ["fresh"]
+
+    async def test_deletion_is_batched(self, db, session):
+        from meiko.db.models import ActivityEvent
+        from meiko.services.core import run_retention
+
+        old = datetime.utcnow() - timedelta(days=400)
+        session.add_all([ActivityEvent(kind="old", created_at=old) for _ in range(12)])
+        await session.flush()
+        await session.commit()
+
+        first = await run_retention(session, batch_size=5)
+        assert first["activity_events"] == 5, "a first run must not delete everything at once"
+        await session.commit()
+        second = await run_retention(session, batch_size=5)
+        assert second["activity_events"] == 5
+
+    async def test_the_watchdog_runs_retention_on_its_own(self, db, session):
+        """No operator creates a cleanup task; the watchdog must do it."""
+        from meiko.db.models import ActivityEvent
+
+        old = datetime.utcnow() - timedelta(days=400)
+        session.add(ActivityEvent(kind="old", created_at=old))
+        await session.flush()
+        await session.commit()
+
+        watchdog = Watchdog(interval=5)
+        watchdog.retention_interval = 0  # due immediately
+        removed = await watchdog.run_retention_if_due()
+        assert removed["activity_events"] == 1
+
+    async def test_retention_is_not_run_on_every_tick(self, db):
+        watchdog = Watchdog(interval=5)
+        watchdog.retention_interval = 10_000
+        first = await watchdog.run_retention_if_due()
+        second = await watchdog.run_retention_if_due()
+        assert first != {} or watchdog.last_retention > 0
+        assert second == {}, "retention must not query the database on every tick"
+
+    async def test_retention_can_be_disabled(self, db, monkeypatch):
+        from types import SimpleNamespace
+
+        watchdog = Watchdog(interval=5)
+        watchdog.settings = SimpleNamespace(  # type: ignore[assignment]
+            retention_enabled=False,
+            retention_interval_seconds=0,
+            retention_activity_days=90,
+            retention_command_log_days=30,
+            retention_runtime_event_days=30,
+            retention_plugin_log_days=30,
+        )
+        assert await watchdog.run_retention_if_due() == {}

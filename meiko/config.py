@@ -156,6 +156,16 @@ class Settings(BaseSettings):
     #: Long-poll timeout for bot workers.  Liveness is measured against a multiple
     #: of this, so raising it widens the window before a bot is called stale.
     telegram_polling_timeout: int = 30
+
+    # ------------------------------------------------------------- retention
+    #: Log tables grow with every command, event and plugin log line. Nothing used to
+    #: delete from them, which fills a small managed database and then fails writes.
+    retention_enabled: bool = True
+    retention_interval_seconds: int = 6 * 60 * 60
+    retention_activity_days: int = 90
+    retention_command_log_days: int = 30
+    retention_runtime_event_days: int = 30
+    retention_plugin_log_days: int = 30
     owner_telegram_ids: str = ""
     webhook_url: str = ""
     webhook_secret: str = ""

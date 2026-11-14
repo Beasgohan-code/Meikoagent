@@ -138,7 +138,29 @@ That is why the documented order is *migrate, then start*: `python start.py
 --service migrate` (or `alembic upgrade head`) before the API, and
 `alembic check` should report no pending operations.
 
-## 6. What this deployment shape still cannot do
+## 6. Data retention
+
+Every log table grows with usage, and nothing used to delete from them:
+`purge_activity()` was documented as "used by the scheduler/watchdog" and had no
+caller at all. On a small managed database that ends with a full volume, which fails
+*writes* — the bot keeps polling and silently stops recording.
+
+The watchdog now prunes on a timer (`RETENTION_ENABLED`, default on) with separate
+windows per table, deleting in batches of 5 000 rows per tick so a first run against
+a large table does not hold one long transaction:
+
+| table | default window | setting |
+| --- | --- | --- |
+| `activity_events` | 90 days | `RETENTION_ACTIVITY_DAYS` |
+| `command_executions` | 30 days | `RETENTION_COMMAND_LOG_DAYS` |
+| `runtime_events` | 30 days | `RETENTION_RUNTIME_EVENT_DAYS` |
+| `plugin_logs` | 30 days | `RETENTION_PLUGIN_LOG_DAYS` |
+
+`RETENTION_INTERVAL_SECONDS` (default 6h) controls how often it runs. Audit logs and
+moderation records are deliberately **not** pruned: they are the record of who did
+what, and losing them to save disk would be the wrong trade.
+
+## 7. What this deployment shape still cannot do
 
 * **No WebSocket through Next.** Use SSE, or expose the API directly.
 * **No bot runtime on Vercel.** Functions do not poll Telegram for a token.

@@ -272,7 +272,7 @@ The console exposes the same surface at `/docs` (grouped operation index) and `/
 ## Testing
 
 ```bash
-python -m pytest -q          # 1090 tests
+python -m pytest -q          # 1097 tests
 cd webapp && npx tsc --noEmit && npm run build
 ```
 
@@ -347,6 +347,9 @@ Everything is environment driven — see `.env.example`. Key settings:
   `python start.py --service health` for container probes.
 - **Ports:** `$PORT` from the platform is adopted when `API_PORT` is unset, so a host
   that assigns a port and probes it sees a healthy service.
+- **Retention:** the watchdog prunes log tables on a timer (activity 90 days, command
+  log 30, runtime events 30, plugin logs 30; `RETENTION_*` settings). Deliberately not
+  pruned: audit and moderation records.
 - **Managed Postgres:** paste the provider's URL as given. `postgresql://` is mapped to
   asyncpg, `?sslmode=require` is translated into a real TLS connect argument, and a
   remote database without TLS refuses to boot in production. If the URL is a
