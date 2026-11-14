@@ -833,3 +833,44 @@ class TestKeepAliveIsNotAnIdleEvasion:
 
         source = inspect.getsource(keep_alive.KeepAlivePlugin.on_start)
         assert "run_immediately=False" in source
+
+
+class TestAutomationConditionsDontFailSilently:
+    """A typo in a condition used to look identical to "did not match"."""
+
+    def test_a_bad_comparison_is_logged_and_treated_as_false(self, caplog, monkeypatch):
+        import logging
+
+        from meiko.plugins.builtin.automation.plugin import conditions_match
+
+        # an operator that raises while comparing; the built-ins are string-safe, so
+        # this is the realistic case of a custom/legacy definition
+        from meiko.moderation import rules
+
+        class Exploding(dict):
+            def get(self, key, default=None):
+                if key == "op":
+                    return "explode"
+                return super().get(key, default)
+
+        # monkeypatch, or the operator leaks into every later test in the session
+        monkeypatch.setitem(
+            rules.CONDITION_OPS, "explode", lambda a, b: (_ for _ in ()).throw(ValueError("bad"))
+        )
+        conditions = [Exploding({"fact": "text", "op": "explode", "value": "x"})]
+        with caplog.at_level(logging.WARNING, logger="meiko.plugin.automation"):
+            matched = conditions_match(conditions, {"text": "hello"})
+        assert matched is False
+        assert any(
+            "could not be evaluated" in record.getMessage() for record in caplog.records
+        ), "a failing condition must be logged, not silently false"
+
+    def test_a_working_condition_is_still_quiet(self, caplog):
+        import logging
+
+        from meiko.plugins.builtin.automation.plugin import conditions_match
+
+        conditions = [{"fact": "text", "op": "contains", "value": "ell"}]
+        with caplog.at_level(logging.WARNING, logger="meiko.plugin.automation"):
+            assert conditions_match(conditions, {"text": "hello"}) is True
+        assert not [r for r in caplog.records if "could not be evaluated" in r.getMessage()]

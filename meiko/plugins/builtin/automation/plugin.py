@@ -7,9 +7,12 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.types import Message
 
+from meiko.logging_setup import get_logger
 from meiko.plugins.base import MeikoPlugin, plugin
 from meiko.plugins.context import PluginContext
 from meiko.ui import message
+
+log = get_logger("plugin.automation")
 
 
 ALLOWED_ACTIONS = {"send_message", "delete_message", "pin_message", "notify_admins", "log", "tag_user"}
@@ -111,7 +114,15 @@ def conditions_match(conditions: list[dict[str, Any]], payload: dict[str, Any]) 
         op = CONDITION_OPS.get(condition.get("op", "eq"))
         try:
             results.append(bool(op(value, condition.get("value"))) if op else False)
-        except Exception:
+        except Exception as exc:
+            # A malformed comparison used to disappear: the workflow just behaved as
+            # if the condition were false, with no way to tell a typo from a real
+            # "no match".  Say which condition and why, once per evaluation.
+            log.warning(
+                "automation condition %r could not be evaluated (%s); treating as false",
+                condition,
+                exc,
+            )
             results.append(False)
     if not results:
         return True

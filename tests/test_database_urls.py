@@ -14,6 +14,7 @@ Both are now normalised, and these tests fail if either regresses.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -175,3 +176,52 @@ class TestAlembicUsesTheSameRules:
             environment="testing",
         )
         assert settings.migration_database_url.startswith("postgresql+asyncpg://")
+
+
+class TestMigrationsDoNotSilenceLogging:
+    """`fileConfig()` disables existing loggers — a real bug, found via a flaky test."""
+
+    def test_env_py_does_not_call_fileconfig(self):
+        from pathlib import Path
+
+        env = (Path(__file__).resolve().parents[1] / "migrations/env.py").read_text()
+        code = "\n".join(
+            line for line in env.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "fileConfig(" not in code.replace("fileConfig(config.config_file_name)", ""), (
+            "migrations/env.py configures logging; that disables every logger already "
+            "created in the process (start.py --service migrate, and caplog in tests)"
+        )
+
+    def test_a_logger_survives_a_migration(self, tmp_path, monkeypatch):
+        """Reproduce the sequence: configure logging, migrate, then try to log."""
+        import logging
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'm.db').as_posix()}")
+        monkeypatch.setenv("MEIKO_ENV_FILE", "")
+        from meiko.config import get_settings
+
+        get_settings.cache_clear()
+
+        from alembic import command
+        from alembic.config import Config
+
+        from meiko.logging_setup import get_logger, setup_logging
+
+        setup_logging("migrate-test")
+        probe = get_logger("migration.probe")
+        assert probe.disabled is False
+
+        config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+        config.set_main_option(
+            "script_location", str(Path(__file__).resolve().parents[1] / "migrations")
+        )
+        # offline mode: parses the environment file without touching a database
+        command.upgrade(config, "head", sql=False)
+        assert probe.disabled is False, (
+            "running migrations disabled an existing logger; every log line after "
+            "`start.py --service migrate` was being dropped"
+        )
+        assert logging.getLogger().handlers, "root handler was removed by alembic"
+        get_settings.cache_clear()

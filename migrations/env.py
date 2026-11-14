@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from logging.config import fileConfig
-
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -15,9 +13,14 @@ from meiko.db.base import Base
 from meiko.db import models  # noqa: F401  (register all tables)
 
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
 
+# Deliberately *not* fileConfig(config.config_file_name): that default sets
+# disable_existing_loggers=True, which silences every logger already created in this
+# process.  `python start.py --service migrate` runs the app's own logging setup and
+# then the migrations in the same process, so fileConfig() switched off the API's,
+# the worker's and every plugin's logging for the rest of the run -- and in tests it
+# silently killed `caplog`.  meiko.logging_setup owns the format; Alembic only needs
+# a working log level here.
 settings = get_settings()
 # Alembic uses the direct URL when one is configured: a transaction-mode pooler
 # (Supabase pgbouncer) cannot run multi-statement DDL reliably.
